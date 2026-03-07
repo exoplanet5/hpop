@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HPOP - Cislunar Orbit Propagator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0a0e17;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        header {
+            background: linear-gradient(135deg, #0d1b2a, #1b2838);
+            padding: 20px 30px;
+            border-bottom: 1px solid #1e3a5f;
+        }
+        header h1 {
+            font-size: 1.6em;
+            color: #7ec8e3;
+            letter-spacing: 2px;
+        }
+        header p { color: #8899aa; font-size: 0.9em; margin-top: 4px; }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 10px 24px;
+            background: #141c2b;
+            border: 1px solid #1e3a5f;
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+            cursor: pointer;
+            color: #8899aa;
+            font-size: 0.95em;
+        }
+        .tab.active {
+            background: #1a2744;
+            color: #7ec8e3;
+            border-color: #2a5a8f;
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .panel {
+            background: #111927;
+            border: 1px solid #1e3a5f;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .panel h3 {
+            color: #7ec8e3;
+            margin-bottom: 12px;
+            font-size: 1.05em;
+            border-bottom: 1px solid #1e3a5f;
+            padding-bottom: 6px;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+        .form-group label {
+            font-size: 0.8em;
+            color: #6688aa;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .form-group input, .form-group select {
+            background: #0d1520;
+            border: 1px solid #1e3a5f;
+            color: #e0e0e0;
+            padding: 8px 10px;
+            border-radius: 4px;
+            font-size: 0.95em;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #3a7abf;
+        }
+        .checkbox-group {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .checkbox-group label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.9em;
+            cursor: pointer;
+            color: #aabbcc;
+        }
+        .checkbox-group input[type="checkbox"] {
+            accent-color: #3a7abf;
+        }
+        .btn {
+            padding: 10px 28px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.95em;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #1a5276, #2980b9);
+            color: #fff;
+        }
+        .btn-primary:hover { background: linear-gradient(135deg, #2980b9, #3498db); }
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background: #1a2744;
+            color: #7ec8e3;
+            border: 1px solid #2a5a8f;
+        }
+        .btn-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
+        .status {
+            margin-top: 12px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            display: none;
+        }
+        .status.info { display: block; background: #0d2137; color: #5dade2; border: 1px solid #1a4a7a; }
+        .status.error { display: block; background: #2d1215; color: #e74c3c; border: 1px solid #6b2020; }
+        .status.success { display: block; background: #0d2a1a; color: #2ecc71; border: 1px solid #1a6b3a; }
+        .results-table-wrap {
+            max-height: 500px;
+            overflow: auto;
+            margin-top: 12px;
+            border: 1px solid #1e3a5f;
+            border-radius: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.82em;
+        }
+        thead th {
+            background: #141c2b;
+            color: #7ec8e3;
+            padding: 8px 10px;
+            text-align: left;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            border-bottom: 2px solid #2a5a8f;
+        }
+        tbody td {
+            padding: 5px 10px;
+            border-bottom: 1px solid #0d1520;
+        }
+        tbody tr:hover { background: #141c2b; }
+        .download-btns {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .radio-group {
+            display: flex;
+            gap: 16px;
+        }
+        .radio-group label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            color: #aabbcc;
+        }
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        @media (max-width: 900px) {
+            .two-col { grid-template-columns: 1fr; }
+        }
+        .form-group textarea {
+            background: #0d1520;
+            border: 1px solid #1e3a5f;
+            color: #e0e0e0;
+            padding: 8px 10px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            resize: vertical;
+            min-height: 80px;
+        }
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #3a7abf;
+        }
+        .parse-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>HPOP Cislunar Orbit Propagator</h1>
+        <p>High Precision Orbit Propagation for Cislunar Spacecraft</p>
+    </header>
+
+    <div class="container">
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('propagate')">Orbit Propagation</div>
+            <div class="tab" onclick="switchTab('ephemeris')">Observation Ephemeris</div>
+        </div>
+
+        <!-- PROPAGATION TAB -->
+        <div id="tab-propagate" class="tab-content active">
+            <!-- Input Type -->
+            <div class="panel">
+                <h3>Initial State</h3>
+                <div class="form-grid" style="margin-bottom: 12px;">
+                    <div class="form-group">
+                        <label>Input Type</label>
+                        <div class="radio-group">
+                            <label><input type="radio" name="input_type" value="state_vector" checked onchange="toggleInputType()"> State Vector</label>
+                            <label><input type="radio" name="input_type" value="paste_text" onchange="toggleInputType()"> Paste Text</label>
+                            <label><input type="radio" name="input_type" value="keplerian" onchange="toggleInputType()"> Keplerian Elements</label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Reference Frame</label>
+                        <select id="ref_frame">
+                            <option value="earth_j2000" selected>Earth J2000 / ICRF</option>
+                            <option value="moon_j2000">Moon-centered J2000</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Paste Text Input -->
+                <div id="paste-text-input" style="display:none;">
+                    <div class="form-group">
+                        <label>Paste XML-tagged state vector</label>
+                        <textarea id="paste_text" rows="6" placeholder="<X>-371565.057</X>&#10;<Y>170605.664</Y>&#10;<Z>73749.974</Z>&#10;<X_DOT>-0.6666</X_DOT>&#10;<Y_DOT>-0.5211</Y_DOT>&#10;<Z_DOT>-0.3480</Z_DOT>"></textarea>
+                    </div>
+                    <div class="parse-row">
+                        <div class="form-group">
+                            <label>Position Unit</label>
+                            <select id="paste_pos_unit">
+                                <option value="km" selected>km</option>
+                                <option value="m">m</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Velocity Unit</label>
+                            <select id="paste_vel_unit">
+                                <option value="km/s" selected>km/s</option>
+                                <option value="m/s">m/s</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-secondary" onclick="parseText()">Parse & Fill</button>
+                    </div>
+                </div>
+
+                <div id="state-vector-input">
+                    <div class="form-grid">
+                        <div class="form-group"><label>X (km)</label><input type="number" id="sv_x" step="any" value="-371565.057"></div>
+                        <div class="form-group"><label>Y (km)</label><input type="number" id="sv_y" step="any" value="170605.664"></div>
+                        <div class="form-group"><label>Z (km)</label><input type="number" id="sv_z" step="any" value="73749.974"></div>
+                        <div class="form-group"><label>VX (km/s)</label><input type="number" id="sv_vx" step="any" value="-0.6666"></div>
+                        <div class="form-group"><label>VY (km/s)</label><input type="number" id="sv_vy" step="any" value="-0.5211"></div>
+                        <div class="form-group"><label>VZ (km/s)</label><input type="number" id="sv_vz" step="any" value="-0.3480"></div>
+                    </div>
+                </div>
+
+                <div id="keplerian-input" style="display:none;">
+                    <div class="form-grid">
+                        <div class="form-group"><label>Semi-major Axis a (km)</label><input type="number" id="kep_a" step="any" value="1838.0"></div>
+                        <div class="form-group"><label>Eccentricity e</label><input type="number" id="kep_e" step="any" value="0.01"></div>
+                        <div class="form-group"><label>Inclination i (deg)</label><input type="number" id="kep_i" step="any" value="90.0"></div>
+                        <div class="form-group"><label>RAAN (deg)</label><input type="number" id="kep_raan" step="any" value="0.0"></div>
+                        <div class="form-group"><label>Arg. Periapsis (deg)</label><input type="number" id="kep_argp" step="any" value="0.0"></div>
+                        <div class="form-group"><label>True Anomaly (deg)</label><input type="number" id="kep_nu" step="any" value="0.0"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Epoch -->
+            <div class="panel">
+                <h3>Epoch</h3>
+                <div class="form-grid">
+                    <div class="form-group"><label>Epoch</label><input type="text" id="epoch" value="2025-06-01T00:00:00"></div>
+                    <div class="form-group">
+                        <label>Format</label>
+                        <select id="epoch_format">
+                            <option value="isot" selected>ISOT (2025-06-01T00:00:00)</option>
+                            <option value="iso">ISO (2025-06-01 00:00:00)</option>
+                            <option value="jd">Julian Date</option>
+                            <option value="mjd">Modified JD</option>
+                            <option value="tt">TT scale</option>
+                            <option value="tdb">TDB scale</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Time Scale</label>
+                        <select id="epoch_scale">
+                            <option value="utc" selected>UTC</option>
+                            <option value="tt">TT</option>
+                            <option value="tdb">TDB</option>
+                            <option value="tai">TAI</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="two-col">
+                <!-- Propagation Settings -->
+                <div class="panel">
+                    <h3>Propagation Settings</h3>
+                    <div class="form-grid">
+                        <div class="form-group"><label>Duration (days)</label><input type="number" id="duration_days" step="any" value="1"></div>
+                        <div class="form-group"><label>Output Step (s)</label><input type="number" id="step" value="60"></div>
+                        <div class="form-group"><label>Gravity Degree (max 20)</label><input type="number" id="gravity_degree" value="10" min="2" max="20"></div>
+                    </div>
+                </div>
+
+                <!-- Perturbations -->
+                <div class="panel">
+                    <h3>Perturbation Sources</h3>
+                    <div class="checkbox-group">
+                        <label><input type="checkbox" id="pert_lunar" checked> Lunar Harmonics</label>
+                        <label><input type="checkbox" id="pert_earth" checked> Earth Gravity</label>
+                        <label><input type="checkbox" id="pert_sun" checked> Sun Gravity</label>
+                        <label><input type="checkbox" id="pert_srp"> Solar Radiation Pressure</label>
+                    </div>
+                    <div class="form-grid" style="margin-top: 10px;">
+                        <div class="form-group"><label>SRP Cr</label><input type="number" id="srp_cr" step="any" value="1.5"></div>
+                        <div class="form-group"><label>Area/Mass (m2/kg)</label><input type="number" id="srp_am" step="any" value="0.02"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn btn-primary" id="btn-propagate" onclick="runPropagation()">Propagate Orbit</button>
+            </div>
+
+            <div id="prop-status" class="status"></div>
+
+            <!-- Results -->
+            <div id="prop-results" style="display:none;">
+                <div class="panel">
+                    <h3>Propagation Results</h3>
+                    <div id="prop-summary"></div>
+                    <div class="download-btns">
+                        <button class="btn btn-secondary" onclick="downloadCSV('prop')">Download State CSV</button>
+                        <button class="btn btn-secondary" onclick="downloadCSV('kep')">Download Keplerian CSV</button>
+                    </div>
+                    <div class="results-table-wrap" id="prop-table-wrap"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- EPHEMERIS TAB -->
+        <div id="tab-ephemeris" class="tab-content">
+            <!-- Observer -->
+            <div class="panel">
+                <h3>Observer Location</h3>
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <label>Observer Type</label>
+                    <div class="radio-group">
+                        <label><input type="radio" name="obs_type" value="geodetic" checked onchange="toggleObsType()"> Geodetic Coordinates</label>
+                        <label><input type="radio" name="obs_type" value="mpc" onchange="toggleObsType()"> MPC Observatory Code</label>
+                    </div>
+                </div>
+                <div id="geodetic-input">
+                    <div class="form-grid">
+                        <div class="form-group"><label>Latitude (deg)</label><input type="number" id="obs_lat" step="any" value="31.9583"></div>
+                        <div class="form-group"><label>Longitude (deg)</label><input type="number" id="obs_lon" step="any" value="-111.5967"></div>
+                        <div class="form-group"><label>Altitude (m)</label><input type="number" id="obs_alt" step="any" value="2097"></div>
+                    </div>
+                </div>
+                <div id="mpc-input" style="display:none;">
+                    <div class="form-grid">
+                        <div class="form-group"><label>MPC Code</label><input type="text" id="obs_mpc" value="G96" placeholder="e.g. G96, 500, 950"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Reuse same orbit input -->
+            <div class="panel">
+                <h3>Spacecraft Orbit (same as Propagation tab)</h3>
+                <p style="color: #6688aa; font-size: 0.9em;">Uses the same initial state, epoch, and perturbation settings from the Propagation tab.</p>
+                <div class="form-grid" style="margin-top:10px;">
+                    <div class="form-group"><label>Ephemeris Step (s)</label><input type="number" id="ephem_step" value="60"></div>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn btn-primary" id="btn-ephemeris" onclick="runEphemeris()">Compute Ephemeris</button>
+            </div>
+
+            <div id="ephem-status" class="status"></div>
+
+            <div id="ephem-results" style="display:none;">
+                <div class="panel">
+                    <h3>Observation Ephemeris</h3>
+                    <div id="ephem-summary"></div>
+                    <div class="download-btns">
+                        <button class="btn btn-secondary" onclick="downloadCSV('ephem')">Download Ephemeris CSV</button>
+                    </div>
+                    <div class="results-table-wrap" id="ephem-table-wrap"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let propData = null;
+        let ephemData = null;
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('tab-' + tabId).classList.add('active');
+        }
+
+        function toggleInputType() {
+            const type = document.querySelector('input[name="input_type"]:checked').value;
+            document.getElementById('state-vector-input').style.display =
+                (type === 'state_vector' || type === 'paste_text') ? 'block' : 'none';
+            document.getElementById('keplerian-input').style.display = type === 'keplerian' ? 'block' : 'none';
+            document.getElementById('paste-text-input').style.display = type === 'paste_text' ? 'block' : 'none';
+        }
+
+        async function parseText() {
+            const text = document.getElementById('paste_text').value;
+            const posUnit = document.getElementById('paste_pos_unit').value;
+            const velUnit = document.getElementById('paste_vel_unit').value;
+
+            try {
+                const resp = await fetch('/api/parse_text', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({text, pos_unit: posUnit, vel_unit: velUnit}),
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    document.getElementById('sv_x').value = data.state[0];
+                    document.getElementById('sv_y').value = data.state[1];
+                    document.getElementById('sv_z').value = data.state[2];
+                    document.getElementById('sv_vx').value = data.state[3];
+                    document.getElementById('sv_vy').value = data.state[4];
+                    document.getElementById('sv_vz').value = data.state[5];
+                } else {
+                    alert('Parse error: ' + data.error);
+                }
+            } catch (e) {
+                alert('Parse failed: ' + e.message);
+            }
+        }
+
+        function toggleObsType() {
+            const type = document.querySelector('input[name="obs_type"]:checked').value;
+            document.getElementById('geodetic-input').style.display = type === 'geodetic' ? 'block' : 'none';
+            document.getElementById('mpc-input').style.display = type === 'mpc' ? 'block' : 'none';
+        }
+
+        function getOrbitInput() {
+            let inputType = document.querySelector('input[name="input_type"]:checked').value;
+            // paste_text uses the state vector fields after parsing
+            const effectiveType = (inputType === 'paste_text') ? 'state_vector' : inputType;
+
+            const data = {
+                input_type: effectiveType,
+                ref_frame: document.getElementById('ref_frame').value,
+                epoch: document.getElementById('epoch').value,
+                epoch_format: document.getElementById('epoch_format').value,
+                epoch_scale: document.getElementById('epoch_scale').value,
+                duration_days: parseFloat(document.getElementById('duration_days').value),
+                step: parseFloat(document.getElementById('step').value),
+                gravity_degree: parseInt(document.getElementById('gravity_degree').value),
+                perturbations: {
+                    lunar_harmonics: document.getElementById('pert_lunar').checked,
+                    earth_gravity: document.getElementById('pert_earth').checked,
+                    sun_gravity: document.getElementById('pert_sun').checked,
+                    srp: document.getElementById('pert_srp').checked,
+                },
+                srp_cr: parseFloat(document.getElementById('srp_cr').value),
+                srp_area_mass: parseFloat(document.getElementById('srp_am').value),
+            };
+
+            if (effectiveType === 'state_vector') {
+                data.state = [
+                    parseFloat(document.getElementById('sv_x').value),
+                    parseFloat(document.getElementById('sv_y').value),
+                    parseFloat(document.getElementById('sv_z').value),
+                    parseFloat(document.getElementById('sv_vx').value),
+                    parseFloat(document.getElementById('sv_vy').value),
+                    parseFloat(document.getElementById('sv_vz').value),
+                ];
+            } else {
+                data.keplerian = {
+                    a: parseFloat(document.getElementById('kep_a').value),
+                    e: parseFloat(document.getElementById('kep_e').value),
+                    i: parseFloat(document.getElementById('kep_i').value),
+                    raan: parseFloat(document.getElementById('kep_raan').value),
+                    argp: parseFloat(document.getElementById('kep_argp').value),
+                    nu: parseFloat(document.getElementById('kep_nu').value),
+                };
+            }
+            return data;
+        }
+
+        function setStatus(elemId, msg, type) {
+            const el = document.getElementById(elemId);
+            el.className = 'status ' + type;
+            el.textContent = msg;
+        }
+
+        async function runPropagation() {
+            const btn = document.getElementById('btn-propagate');
+            btn.disabled = true;
+            setStatus('prop-status', 'Propagating orbit... This may take a moment.', 'info');
+            document.getElementById('prop-results').style.display = 'none';
+
+            try {
+                const input = getOrbitInput();
+                const resp = await fetch('/api/propagate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(input),
+                });
+                const data = await resp.json();
+
+                if (!data.success) {
+                    setStatus('prop-status', 'Error: ' + data.error, 'error');
+                    return;
+                }
+
+                propData = data;
+                const ik = data.initial_keplerian;
+                document.getElementById('prop-summary').innerHTML =
+                    `<p style="color:#aabbcc;font-size:0.9em;">
+                    Steps: ${data.n_steps} | Epoch: ${data.epoch} |
+                    a=${ik.a.toFixed(2)} km, e=${ik.e.toFixed(6)},
+                    i=${ik.i.toFixed(3)}&deg;, &Omega;=${ik.raan.toFixed(3)}&deg;,
+                    &omega;=${ik.argp.toFixed(3)}&deg;, &nu;=${ik.nu.toFixed(3)}&deg;
+                    </p>`;
+
+                // Build table
+                let html = '<table><thead><tr><th>Time (UTC)</th><th>X (km)</th><th>Y (km)</th><th>Z (km)</th><th>VX (km/s)</th><th>VY (km/s)</th><th>VZ (km/s)</th><th>a (km)</th><th>e</th><th>i (&deg;)</th></tr></thead><tbody>';
+                for (let idx = 0; idx < data.times.length; idx++) {
+                    const s = data.states[idx];
+                    const k = data.keplerian[idx];
+                    html += `<tr>
+                        <td>${data.times[idx]}</td>
+                        <td>${s[0].toFixed(4)}</td><td>${s[1].toFixed(4)}</td><td>${s[2].toFixed(4)}</td>
+                        <td>${s[3].toFixed(6)}</td><td>${s[4].toFixed(6)}</td><td>${s[5].toFixed(6)}</td>
+                        <td>${k.a.toFixed(3)}</td><td>${k.e.toFixed(6)}</td><td>${k.i.toFixed(4)}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                document.getElementById('prop-table-wrap').innerHTML = html;
+                document.getElementById('prop-results').style.display = 'block';
+                setStatus('prop-status', `Propagation complete. ${data.n_steps} steps computed.`, 'success');
+
+            } catch (e) {
+                setStatus('prop-status', 'Request failed: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function runEphemeris() {
+            const btn = document.getElementById('btn-ephemeris');
+            btn.disabled = true;
+            setStatus('ephem-status', 'Computing observation ephemeris...', 'info');
+            document.getElementById('ephem-results').style.display = 'none';
+
+            try {
+                const input = getOrbitInput();
+
+                // Observer
+                const obsType = document.querySelector('input[name="obs_type"]:checked').value;
+                if (obsType === 'geodetic') {
+                    input.observer = {
+                        type: 'geodetic',
+                        lat: parseFloat(document.getElementById('obs_lat').value),
+                        lon: parseFloat(document.getElementById('obs_lon').value),
+                        alt: parseFloat(document.getElementById('obs_alt').value),
+                    };
+                } else {
+                    input.observer = {
+                        type: 'mpc',
+                        mpc_code: document.getElementById('obs_mpc').value,
+                    };
+                }
+                input.ephemeris_step = parseFloat(document.getElementById('ephem_step').value);
+
+                const resp = await fetch('/api/ephemeris', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(input),
+                });
+                const data = await resp.json();
+
+                if (!data.success) {
+                    setStatus('ephem-status', 'Error: ' + data.error, 'error');
+                    return;
+                }
+
+                ephemData = data;
+                const obs = data.observer;
+                let obsInfo = obs.type === 'mpc' ?
+                    `MPC: ${obs.mpc_code}` :
+                    `Lat: ${obs.lat}&deg;, Lon: ${obs.lon}&deg;, Alt: ${obs.alt}m`;
+                document.getElementById('ephem-summary').innerHTML =
+                    `<p style="color:#aabbcc;font-size:0.9em;">
+                    Points: ${data.n_points} | Observer: ${obsInfo}
+                    </p>`;
+
+                let html = '<table><thead><tr><th>Time (UTC)</th><th>RA (HMS)</th><th>DEC (DMS)</th><th>RA (&deg;)</th><th>DEC (&deg;)</th><th>Dist (km)</th><th>Alt (&deg;)</th><th>Az (&deg;)</th></tr></thead><tbody>';
+                for (let idx = 0; idx < data.times_utc.length; idx++) {
+                    const alt = data.altitude_deg[idx];
+                    const az = data.azimuth_deg[idx];
+                    html += `<tr>
+                        <td>${data.times_utc[idx]}</td>
+                        <td>${data.ra_hms[idx]}</td>
+                        <td>${data.dec_dms[idx]}</td>
+                        <td>${data.ra_deg[idx].toFixed(6)}</td>
+                        <td>${data.dec_deg[idx].toFixed(6)}</td>
+                        <td>${data.distance_km[idx].toFixed(1)}</td>
+                        <td>${alt !== null ? alt.toFixed(2) : '-'}</td>
+                        <td>${az !== null ? az.toFixed(2) : '-'}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                document.getElementById('ephem-table-wrap').innerHTML = html;
+                document.getElementById('ephem-results').style.display = 'block';
+                setStatus('ephem-status', `Ephemeris complete. ${data.n_points} points computed.`, 'success');
+
+            } catch (e) {
+                setStatus('ephem-status', 'Request failed: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function downloadCSV(type) {
+            let csv = '';
+            let filename = '';
+
+            if (type === 'prop' && propData) {
+                csv = 'Time_UTC,X_km,Y_km,Z_km,VX_km_s,VY_km_s,VZ_km_s\n';
+                for (let i = 0; i < propData.times.length; i++) {
+                    const s = propData.states[i];
+                    csv += `${propData.times[i]},${s[0]},${s[1]},${s[2]},${s[3]},${s[4]},${s[5]}\n`;
+                }
+                filename = 'hpop_states.csv';
+            } else if (type === 'kep' && propData) {
+                csv = 'Time_UTC,a_km,e,i_deg,RAAN_deg,argp_deg,nu_deg\n';
+                for (let i = 0; i < propData.times.length; i++) {
+                    const k = propData.keplerian[i];
+                    csv += `${propData.times[i]},${k.a},${k.e},${k.i},${k.raan},${k.argp},${k.nu}\n`;
+                }
+                filename = 'hpop_keplerian.csv';
+            } else if (type === 'ephem' && ephemData) {
+                csv = 'Time_UTC,RA_HMS,DEC_DMS,RA_deg,DEC_deg,Distance_km,Alt_deg,Az_deg\n';
+                for (let i = 0; i < ephemData.times_utc.length; i++) {
+                    csv += `${ephemData.times_utc[i]},${ephemData.ra_hms[i]},${ephemData.dec_dms[i]},${ephemData.ra_deg[i]},${ephemData.dec_deg[i]},${ephemData.distance_km[i]},${ephemData.altitude_deg[i] || ''},${ephemData.azimuth_deg[i] || ''}\n`;
+                }
+                filename = 'hpop_ephemeris.csv';
+            } else {
+                return;
+            }
+
+            const blob = new Blob([csv], {type: 'text/csv'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
