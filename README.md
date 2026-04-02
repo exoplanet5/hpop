@@ -1,3 +1,12 @@
+---
+title: HPOP
+emoji: 🌙
+colorFrom: indigo
+colorTo: gray
+sdk: docker
+app_port: 7860
+---
+
 # HPOP — Cislunar High Precision Orbit Propagator
 
 A web-based high precision orbit propagator for spacecraft in the cislunar region. Built with Python and Flask, accessible over LAN.
