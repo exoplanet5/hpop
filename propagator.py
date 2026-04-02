@@ -1,7 +1,7 @@
 """
 High Precision Orbit Propagator (HPOP) for cislunar spacecraft.
 
-Propagates spacecraft state in Moon-centered J2000 (ICRF) frame using
+Propagates spacecraft state in Moon-centered ICRF frame using
 numerical integration with high-precision perturbation models.
 """
 
@@ -27,45 +27,45 @@ from lunar_coeffs import get_coefficients, R_MOON
 from time_utils import parse_epoch, time_to_jd_tdb
 
 
-def convert_earth_to_moon(state_earth_j2000, epoch):
-    """Convert state from Earth-centered J2000 to Moon-centered J2000.
+def convert_earth_to_moon(state_earth_icrf, epoch):
+    """Convert state from Earth-centered ICRF to Moon-centered ICRF.
 
     Parameters
     ----------
-    state_earth_j2000 : ndarray (6,)
-        [x, y, z, vx, vy, vz] in Earth-centered J2000, km and km/s.
+    state_earth_icrf : ndarray (6,)
+        [x, y, z, vx, vy, vz] in Earth-centered ICRF, km and km/s.
     epoch : astropy.time.Time
 
     Returns
     -------
-    state_moon_j2000 : ndarray (6,)
-        [x, y, z, vx, vy, vz] in Moon-centered J2000, km and km/s.
+    state_moon_icrf : ndarray (6,)
+        [x, y, z, vx, vy, vz] in Moon-centered ICRF, km and km/s.
     """
     solar_system_ephemeris.set('builtin')
     moon_pos, moon_vel = get_body_barycentric_posvel('moon', epoch)
     earth_pos, earth_vel = get_body_barycentric_posvel('earth', epoch)
 
-    # Moon position/velocity relative to Earth (ICRS ≈ J2000)
+    # Moon position/velocity relative to Earth (ICRS/ICRF)
     moon_geo_pos = (moon_pos.xyz - earth_pos.xyz).to(u.km).value
     moon_geo_vel = (moon_vel.xyz - earth_vel.xyz).to(u.km / u.s).value
 
     state_moon = np.zeros(6)
-    state_moon[:3] = state_earth_j2000[:3] - moon_geo_pos
-    state_moon[3:] = state_earth_j2000[3:] - moon_geo_vel
+    state_moon[:3] = state_earth_icrf[:3] - moon_geo_pos
+    state_moon[3:] = state_earth_icrf[3:] - moon_geo_vel
     return state_moon
 
 
-def convert_moon_to_earth(state_moon_j2000, epoch):
-    """Convert state from Moon-centered J2000 to Earth-centered J2000.
+def convert_moon_to_earth(state_moon_icrf, epoch):
+    """Convert state from Moon-centered ICRF to Earth-centered ICRF.
 
     Parameters
     ----------
-    state_moon_j2000 : ndarray (6,)
+    state_moon_icrf : ndarray (6,)
     epoch : astropy.time.Time
 
     Returns
     -------
-    state_earth_j2000 : ndarray (6,)
+    state_earth_icrf : ndarray (6,)
     """
     solar_system_ephemeris.set('builtin')
     moon_pos, moon_vel = get_body_barycentric_posvel('moon', epoch)
@@ -75,8 +75,8 @@ def convert_moon_to_earth(state_moon_j2000, epoch):
     moon_geo_vel = (moon_vel.xyz - earth_vel.xyz).to(u.km / u.s).value
 
     state_earth = np.zeros(6)
-    state_earth[:3] = state_moon_j2000[:3] + moon_geo_pos
-    state_earth[3:] = state_moon_j2000[3:] + moon_geo_vel
+    state_earth[:3] = state_moon_icrf[:3] + moon_geo_pos
+    state_earth[3:] = state_moon_icrf[3:] + moon_geo_vel
     return state_earth
 
 
@@ -260,7 +260,7 @@ def propagate(state0, epoch, duration_sec, step_sec=60.0, config=None,
     Parameters
     ----------
     state0 : ndarray (6,)
-        Initial state [x, y, z, vx, vy, vz] in Moon-centered J2000.
+        Initial state [x, y, z, vx, vy, vz] in Moon-centered ICRF.
         Units: km, km/s.
     epoch : astropy.time.Time
         Initial epoch.

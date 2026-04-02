@@ -240,7 +240,7 @@
             <!-- Input Type -->
             <div class="panel">
                 <h3>Initial State</h3>
-                <div class="form-grid" style="margin-bottom: 12px;">
+                <div style="display: flex; gap: 32px; align-items: flex-start; margin-bottom: 12px; flex-wrap: wrap;">
                     <div class="form-group">
                         <label>Input Type</label>
                         <div class="radio-group">
@@ -249,11 +249,11 @@
                             <label><input type="radio" name="input_type" value="keplerian" onchange="toggleInputType()"> Keplerian Elements</label>
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label>Reference Frame</label>
+                    <div class="form-group" style="min-width: 160px;">
+                        <label>Input Reference Frame</label>
                         <select id="ref_frame">
-                            <option value="earth_j2000" selected>Earth J2000 / ICRF</option>
-                            <option value="moon_j2000">Moon-centered J2000</option>
+                            <option value="earth_icrf" selected>Earth ICRF</option>
+                            <option value="moon_icrf">Moon ICRF</option>
                         </select>
                     </div>
                 </div>
@@ -310,11 +310,11 @@
             <div class="panel">
                 <h3>Epoch</h3>
                 <div class="form-grid">
-                    <div class="form-group"><label>Epoch</label><input type="text" id="epoch" value="2025-06-01T00:00:00"></div>
+                    <div class="form-group"><label>Epoch</label><input type="text" id="epoch" value="2026-03-02T00:00:00"></div>
                     <div class="form-group">
                         <label>Format</label>
                         <select id="epoch_format">
-                            <option value="isot" selected>ISOT (2025-06-01T00:00:00)</option>
+                            <option value="isot" selected>ISOT (2026-03-02T00:00:00)</option>
                             <option value="iso">ISO (2025-06-01 00:00:00)</option>
                             <option value="jd">Julian Date</option>
                             <option value="mjd">Modified JD</option>
@@ -342,6 +342,13 @@
                         <div class="form-group"><label>Duration (days)</label><input type="number" id="duration_days" step="any" value="1"></div>
                         <div class="form-group"><label>Output Step (s)</label><input type="number" id="step" value="60"></div>
                         <div class="form-group"><label>Gravity Degree (max 20)</label><input type="number" id="gravity_degree" value="10" min="2" max="20"></div>
+                        <div class="form-group">
+                            <label>Output Reference Frame</label>
+                            <select id="output_frame">
+                                <option value="moon_icrf">Moon ICRF</option>
+                                <option value="earth_icrf" selected>Earth ICRF</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
@@ -407,11 +414,15 @@
                 </div>
             </div>
 
-            <!-- Reuse same orbit input -->
+            <!-- Ephemeris time range & settings -->
             <div class="panel">
-                <h3>Spacecraft Orbit (same as Propagation tab)</h3>
-                <p style="color: #6688aa; font-size: 0.9em;">Uses the same initial state, epoch, and perturbation settings from the Propagation tab.</p>
-                <div class="form-grid" style="margin-top:10px;">
+                <h3>Ephemeris Time Range</h3>
+                <div id="ephem-orbit-range" style="color: #f39c12; font-size: 0.85em; margin-bottom: 10px; padding: 6px 10px; background: #1a1a0d; border: 1px solid #3a3a1f; border-radius: 4px; display: none;">
+                </div>
+                <p style="color: #6688aa; font-size: 0.85em; margin-bottom: 10px;">Orbit state and perturbations are taken from the Propagation tab. Run propagation first to see the valid time range.</p>
+                <div class="form-grid">
+                    <div class="form-group"><label>Ephemeris Start (UTC ISOT)</label><input type="text" id="ephem_start" value=""></div>
+                    <div class="form-group"><label>Duration (days)</label><input type="number" id="ephem_duration_days" step="any" value="1"></div>
                     <div class="form-group"><label>Ephemeris Step (s)</label><input type="number" id="ephem_step" value="60"></div>
                 </div>
             </div>
@@ -509,6 +520,7 @@
                 },
                 srp_cr: parseFloat(document.getElementById('srp_cr').value),
                 srp_area_mass: parseFloat(document.getElementById('srp_am').value),
+                output_frame: document.getElementById('output_frame').value,
             };
 
             if (effectiveType === 'state_vector') {
@@ -586,6 +598,17 @@
                 document.getElementById('prop-results').style.display = 'block';
                 setStatus('prop-status', `Propagation complete. ${data.n_steps} steps computed.`, 'success');
 
+                // Update ephemeris tab with valid time range
+                const propStart = data.times[0];
+                const propEnd = data.times[data.times.length - 1];
+                const rangeEl = document.getElementById('ephem-orbit-range');
+                rangeEl.innerHTML = `Orbit propagation covers: <strong>${propStart}</strong> to <strong>${propEnd}</strong>. Ephemeris start/end must be within this range.`;
+                rangeEl.style.display = 'block';
+                // Pre-fill ephemeris start with propagation start
+                if (!document.getElementById('ephem_start').value) {
+                    document.getElementById('ephem_start').value = propStart;
+                }
+
             } catch (e) {
                 setStatus('prop-status', 'Request failed: ' + e.message, 'error');
             } finally {
@@ -600,7 +623,12 @@
             document.getElementById('ephem-results').style.display = 'none';
 
             try {
+                // Get orbit state/epoch/perturbations from propagation tab
                 const input = getOrbitInput();
+
+                // Ephemeris-specific time range
+                input.ephem_start = document.getElementById('ephem_start').value;
+                input.ephem_duration_days = parseFloat(document.getElementById('ephem_duration_days').value);
 
                 // Observer
                 const obsType = document.querySelector('input[name="obs_type"]:checked').value;
@@ -641,19 +669,45 @@
                     Points: ${data.n_points} | Observer: ${obsInfo}
                     </p>`;
 
-                let html = '<table><thead><tr><th>Time (UTC)</th><th>RA (HMS)</th><th>DEC (DMS)</th><th>RA (&deg;)</th><th>DEC (&deg;)</th><th>Dist (km)</th><th>Alt (&deg;)</th><th>Az (&deg;)</th></tr></thead><tbody>';
+                const flagColors = {
+                    'night': '#2ecc71',
+                    'astro_tw': '#27ae60',
+                    'nautical_tw': '#f39c12',
+                    'civil_tw': '#e67e22',
+                    'day': '#e74c3c',
+                    'unknown': '#888',
+                };
+                const flagLabels = {
+                    'night': 'Night',
+                    'astro_tw': 'Astro Tw',
+                    'nautical_tw': 'Naut Tw',
+                    'civil_tw': 'Civil Tw',
+                    'day': 'Day',
+                    'unknown': '?',
+                };
+
+                let html = '<table><thead><tr><th>Time (UTC)</th><th>RA (HMS)</th><th>DEC (DMS)</th><th>dRA (&quot;/min)</th><th>dDEC (&quot;/min)</th><th>Rate (&quot;/min)</th><th>PA (&deg;)</th><th>RA (&deg;)</th><th>DEC (&deg;)</th><th>Dist (km)</th><th>Lunar Elong (&deg;)</th><th>Alt (&deg;)</th><th>Az (&deg;)</th><th>Sky</th></tr></thead><tbody>';
                 for (let idx = 0; idx < data.times_utc.length; idx++) {
                     const alt = data.altitude_deg[idx];
                     const az = data.azimuth_deg[idx];
+                    const flag = data.sky_flag[idx];
+                    const flagColor = flagColors[flag] || '#888';
+                    const flagLabel = flagLabels[flag] || flag;
                     html += `<tr>
                         <td>${data.times_utc[idx]}</td>
                         <td>${data.ra_hms[idx]}</td>
                         <td>${data.dec_dms[idx]}</td>
+                        <td>${data.ra_rate[idx].toFixed(2)}</td>
+                        <td>${data.dec_rate[idx].toFixed(2)}</td>
+                        <td>${data.total_rate[idx].toFixed(2)}</td>
+                        <td>${data.pa[idx].toFixed(1)}</td>
                         <td>${data.ra_deg[idx].toFixed(6)}</td>
                         <td>${data.dec_deg[idx].toFixed(6)}</td>
                         <td>${data.distance_km[idx].toFixed(1)}</td>
+                        <td>${data.lunar_elong[idx].toFixed(3)}</td>
                         <td>${alt !== null ? alt.toFixed(2) : '-'}</td>
                         <td>${az !== null ? az.toFixed(2) : '-'}</td>
+                        <td style="color:${flagColor}">${flagLabel}</td>
                     </tr>`;
                 }
                 html += '</tbody></table>';
@@ -687,9 +741,9 @@
                 }
                 filename = 'hpop_keplerian.csv';
             } else if (type === 'ephem' && ephemData) {
-                csv = 'Time_UTC,RA_HMS,DEC_DMS,RA_deg,DEC_deg,Distance_km,Alt_deg,Az_deg\n';
+                csv = 'Time_UTC,RA_HMS,DEC_DMS,dRA_arcsec_per_min,dDEC_arcsec_per_min,TotalRate_arcsec_per_min,PA_deg,RA_deg,DEC_deg,Distance_km,LunarElong_deg,Alt_deg,Az_deg,Sky\n';
                 for (let i = 0; i < ephemData.times_utc.length; i++) {
-                    csv += `${ephemData.times_utc[i]},${ephemData.ra_hms[i]},${ephemData.dec_dms[i]},${ephemData.ra_deg[i]},${ephemData.dec_deg[i]},${ephemData.distance_km[i]},${ephemData.altitude_deg[i] || ''},${ephemData.azimuth_deg[i] || ''}\n`;
+                    csv += `${ephemData.times_utc[i]},${ephemData.ra_hms[i]},${ephemData.dec_dms[i]},${ephemData.ra_rate[i]},${ephemData.dec_rate[i]},${ephemData.total_rate[i]},${ephemData.pa[i]},${ephemData.ra_deg[i]},${ephemData.dec_deg[i]},${ephemData.distance_km[i]},${ephemData.lunar_elong[i]},${ephemData.altitude_deg[i] || ''},${ephemData.azimuth_deg[i] || ''},${ephemData.sky_flag[i]}\n`;
                 }
                 filename = 'hpop_ephemeris.csv';
             } else {

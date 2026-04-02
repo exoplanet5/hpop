@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/mickey/.venvs/astro313/bin/pip list:*)",
+      "Bash(/Users/mickey/.venvs/astro313/bin/python:*)",
+      "Bash(/Users/mickey/.venvs/astro313/bin/pip install:*)",
+      "Bash(gh auth:*)",
+      "Bash(git config:*)",
+      "Bash(ssh:*)",
+      "Bash(git init:*)",
+      "Bash(git:*)"
+    ]
+  }
+}

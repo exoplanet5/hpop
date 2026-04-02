@@ -7,7 +7,7 @@ Includes:
 - Sun third-body gravity
 - Optional: Solar radiation pressure
 
-All computations in Moon-centered J2000 (ICRF) frame.
+All computations in Moon-centered ICRF frame.
 Units: km, km/s, km/s^2
 """
 
@@ -20,7 +20,7 @@ GM_SUN = 1.32712440018e+11
 
 
 def lunar_body_fixed_rotation(t_jd_tdb):
-    """Compute rotation matrix from J2000 inertial to Moon body-fixed (ME frame).
+    """Compute rotation matrix from ICRF inertial to Moon body-fixed (ME frame).
 
     Uses IAU 2009 model for the Moon's orientation.
 

@@ -24,6 +24,7 @@ from propagator import (
 )
 from ephemeris import compute_observation_ephemeris
 from time_utils import parse_epoch
+from astropy.time import TimeDelta
 from lunar_coeffs import GM_MOON
 
 app = Flask(__name__)
@@ -53,14 +54,14 @@ def index():
 def _parse_state_from_request(data, epoch):
     """Parse initial state from request data, handling frame conversion.
 
-    Returns state in Moon-centered J2000 (km, km/s).
+    Returns state in Moon-centered ICRF (km, km/s).
     """
     input_type = data.get('input_type', 'state_vector')
-    ref_frame = data.get('ref_frame', 'earth_j2000')
+    ref_frame = data.get('ref_frame', 'earth_icrf')
 
     if input_type == 'keplerian':
         kep = data['keplerian']
-        gm = GM_MOON if ref_frame == 'moon_j2000' else 398600.4418
+        gm = GM_MOON if ref_frame == 'moon_icrf' else 398600.4418
         state0 = keplerian_to_cartesian(
             float(kep['a']), float(kep['e']),
             float(kep['i']), float(kep['raan']),
@@ -70,8 +71,8 @@ def _parse_state_from_request(data, epoch):
     else:
         state0 = np.array([float(x) for x in data['state']])
 
-    # Convert to Moon-centered J2000 if needed
-    if ref_frame != 'moon_j2000':
+    # Convert to Moon-centered ICRF if needed
+    if ref_frame != 'moon_icrf':
         state0 = convert_earth_to_moon(state0, epoch)
 
     return state0
@@ -128,7 +129,7 @@ def api_propagate():
     - input_type: 'state_vector' or 'keplerian'
     - state: [x, y, z, vx, vy, vz] (km, km/s) if state_vector
     - keplerian: {a, e, i, raan, argp, nu} (km, deg) if keplerian
-    - ref_frame: 'earth_j2000', 'moon_j2000', 'icrf' (default 'earth_j2000')
+    - ref_frame: 'earth_icrf', 'moon_icrf' (default 'earth_icrf')
     - epoch: epoch string
     - epoch_format: 'isot', 'jd', 'mjd', etc.
     - epoch_scale: 'utc', 'tt', 'tdb', etc. (default 'utc')
@@ -148,7 +149,7 @@ def api_propagate():
         epoch_scale = data.get('epoch_scale', 'utc')
         epoch = parse_epoch(epoch_str, epoch_format, epoch_scale)
 
-        # Parse initial state (returns Moon-centered J2000)
+        # Parse initial state (returns Moon-centered ICRF)
         state0 = _parse_state_from_request(data, epoch)
 
         # Configuration
@@ -166,23 +167,48 @@ def api_propagate():
         duration = duration_days * 86400.0  # convert days to seconds
         step = float(data.get('step', 60))
 
-        # Run propagation
+        # Run propagation (always in Moon-centered ICRF internally)
         result = propagate(state0, epoch, duration, step, config)
 
-        # Format output
-        times_iso = [t.utc.isot for t in result['times']]
-        states = result['states'].tolist()
-        keplerian = result['keplerian']
+        # Output frame conversion
+        output_frame = data.get('output_frame', 'moon_icrf')
+        times = result['times']
+        states_moon = result['states']  # Moon-centered ICRF
+
+        if output_frame == 'earth_icrf':
+            # Convert each state to Earth-centered ICRF
+            states_out = np.zeros_like(states_moon)
+            for i, (t, s) in enumerate(zip(times, states_moon)):
+                states_out[i] = convert_moon_to_earth(s, t)
+            gm_out = 398600.4418  # GM_EARTH for Keplerian elements
+        else:
+            states_out = states_moon
+            gm_out = GM_MOON
+
+        # Recompute Keplerian elements in output frame
+        keplerian = []
+        for s in states_out:
+            try:
+                keplerian.append(cartesian_to_keplerian(s, gm_out))
+            except Exception:
+                keplerian.append({
+                    'a': float('nan'), 'e': float('nan'), 'i': float('nan'),
+                    'raan': float('nan'), 'argp': float('nan'), 'nu': float('nan')
+                })
+
+        times_iso = [t.utc.isot for t in times]
+        initial_state_out = states_out[0] if len(states_out) > 0 else state0
 
         return jsonify({
             'success': True,
             'times': times_iso,
-            'states': states,
+            'states': states_out.tolist(),
             'keplerian': keplerian,
             'epoch': epoch.utc.isot,
             'n_steps': len(times_iso),
-            'initial_state': state0.tolist(),
-            'initial_keplerian': cartesian_to_keplerian(state0, GM_MOON),
+            'initial_state': initial_state_out.tolist(),
+            'initial_keplerian': cartesian_to_keplerian(initial_state_out, gm_out),
+            'output_frame': output_frame,
         })
 
     except Exception as e:
@@ -207,7 +233,7 @@ def api_ephemeris():
         epoch_scale = data.get('epoch_scale', 'utc')
         epoch = parse_epoch(epoch_str, epoch_format, epoch_scale)
 
-        # Parse initial state (returns Moon-centered J2000)
+        # Parse initial state (returns Moon-centered ICRF)
         state0 = _parse_state_from_request(data, epoch)
 
         # Configuration
@@ -219,12 +245,27 @@ def api_ephemeris():
         config.sun_gravity = perturbs.get('sun_gravity', True)
         config.srp = perturbs.get('srp', False)
 
-        duration_days = float(data.get('duration_days', data.get('duration', 1)))
-        duration = duration_days * 86400.0
+        # Ephemeris time range: ephem_start + ephem_duration_days
+        # Orbit propagation covers: epoch to epoch + duration_days
+        ephem_start_str = data.get('ephem_start', None)
+        ephem_duration_days = float(data.get('ephem_duration_days',
+                                             data.get('duration_days',
+                                                      data.get('duration', 1))))
+        prop_duration_days = float(data.get('duration_days', data.get('duration', 1)))
+
+        if ephem_start_str:
+            ephem_start = parse_epoch(ephem_start_str, 'isot', 'utc')
+        else:
+            ephem_start = epoch
+
+        # Propagation must cover from epoch to ephem_start + ephem_duration
+        ephem_end = ephem_start + TimeDelta(ephem_duration_days * 86400.0, format='sec')
+        needed_sec = (ephem_end - epoch).sec
+        prop_duration = max(prop_duration_days * 86400.0, needed_sec)
         step = float(data.get('step', 60))
 
-        # Propagate
-        result = propagate(state0, epoch, duration, step, config)
+        # Propagate for the full needed range
+        result = propagate(state0, epoch, prop_duration, step, config)
 
         # Observer
         observer_config = data.get('observer', {
@@ -232,8 +273,13 @@ def api_ephemeris():
         })
         ephem_step = float(data.get('ephemeris_step', 60))
 
-        # Compute ephemeris
-        ephem = compute_observation_ephemeris(result, observer_config, ephem_step)
+        # Compute ephemeris with optional start/end clipping
+        ephem_start_offset = (ephem_start - epoch).sec
+        ephem = compute_observation_ephemeris(
+            result, observer_config, ephem_step,
+            t_start_offset=ephem_start_offset,
+            t_duration=ephem_duration_days * 86400.0
+        )
 
         return jsonify({
             'success': True,
