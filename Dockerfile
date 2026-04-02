@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN pip install --no-cache-dir \
-    numpy scipy astropy jplephem flask astroquery erfa
+    numpy scipy astropy jplephem flask astroquery
 
 COPY . .
 
