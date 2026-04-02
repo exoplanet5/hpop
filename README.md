@@ -4,7 +4,7 @@ A web-based high precision orbit propagator for spacecraft in the cislunar regio
 
 ## Dynamical Model
 
-The propagator integrates equations of motion in **Moon-centered J2000 (ICRF)** frame using SciPy's DOP853 (8th-order Runge-Kutta) integrator with tolerances of `rtol=1e-12`, `atol=1e-14`.
+The propagator integrates equations of motion in **Moon-centered ICRF** frame using SciPy's DOP853 (8th-order Runge-Kutta) integrator with tolerances of `rtol=1e-12`, `atol=1e-14`.
 
 ### Perturbation Sources
 
@@ -30,23 +30,35 @@ The propagator integrates equations of motion in **Moon-centered J2000 (ICRF)** 
 
 ### Reference Frames
 
+The project uses **ICRF** consistently (not J2000; the two differ by ~0.01 arcsec frame tie rotation).
+
 Input state vectors can be provided in:
-- **Earth J2000 / ICRF** (Earth-centered inertial) — converted to Moon-centered using JPL ephemeris at the input epoch
-- **Moon-centered J2000** — used directly
+- **Earth ICRF** (Earth-centered inertial) — converted to Moon-centered using JPL ephemeris at the input epoch
+- **Moon ICRF** (Moon-centered inertial) — used directly
+
+Output reference frame is selectable between Earth ICRF and Moon ICRF. Internal propagation always runs in Moon-centered ICRF; frame conversion is applied at the output boundary.
 
 ## Features
 
 ### Part 1: Orbit Propagation
 - Input: state vector (km, km/s) or Keplerian elements (km, deg)
 - Supports pasting XML-tagged text (e.g., `<X>...</X> <X_DOT>...</X_DOT>`) with automatic unit conversion (m↔km, m/s↔km/s)
+- Selectable input and output reference frames (Earth ICRF / Moon ICRF)
 - Propagation duration in days, output step in seconds
-- Output: time-stamped state vectors and osculating Keplerian elements
+- Output: time-stamped state vectors and osculating Keplerian elements (with correct GM for the selected output frame)
 - Downloadable as CSV
 
 ### Part 2: Observation Ephemeris
 - Computes topocentric RA/DEC of the spacecraft as seen from a ground observer
 - Observer specified by geodetic coordinates (lat, lon, alt) or MPC observatory code
-- Output at 1-minute intervals (configurable): RA (HMS), DEC (DMS), distance, altitude, azimuth
+- Configurable start time and duration (sub-range of the propagation window)
+- Output at 1-minute intervals (configurable):
+  - RA (HMS), DEC (DMS)
+  - RA rate, DEC rate (arcsec/min)
+  - Total sky-plane motion rate (arcsec/min) and position angle (PA, N through E)
+  - Lunar elongation (angular separation between target and Moon center)
+  - Topocentric distance, altitude, azimuth
+  - Sky condition flag (night / astronomical twilight / nautical twilight / civil twilight / day)
 - Downloadable as CSV
 
 ## Requirements
