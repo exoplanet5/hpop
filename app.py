@@ -88,19 +88,24 @@ def _parse_state_from_request(data, epoch):
 
 @app.route('/api/parse_text', methods=['POST'])
 def api_parse_text():
-    """Parse plain text with XML-style tags into state vector values.
+    """Parse plain text into state vector or Keplerian elements.
 
-    Accepts text like:
-    <X>-371565.057</X> <Y>170605.664</Y> ...
-    <X_DOT>-0.6666</X_DOT> ...
-
-    Returns parsed values with unit conversion applied.
+    Supports:
+    1. XML-tagged state vectors: <X>...</X> <Y>...</Y> ...
+    2. Find_Orb style Keplerian elements block
     """
     try:
         data = request.get_json()
         text = data.get('text', '')
-        pos_unit = data.get('pos_unit', 'km')  # 'km' or 'm'
-        vel_unit = data.get('vel_unit', 'km/s')  # 'km/s' or 'm/s'
+
+        # Detect Find_Orb format by looking for characteristic patterns
+        if re.search(r'(?:Find_Orb|Epoch\s+\d{4}\s+\w+)', text) and \
+           re.search(r'^\s*[Mae]\s', text, re.MULTILINE):
+            return _parse_findorb(text)
+
+        # Fall back to XML tag parsing
+        pos_unit = data.get('pos_unit', 'km')
+        vel_unit = data.get('vel_unit', 'km/s')
 
         tag_map = {
             'X': 0, 'Y': 1, 'Z': 2,
@@ -127,6 +132,92 @@ def api_parse_text():
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+
+
+def _parse_findorb(text):
+    """Parse Find_Orb style orbital elements block.
+
+    Example:
+        Epoch 2026 Apr  9.0 TT = JDT 2461139.5                 Find_Orb
+        M  91.93181287 +/- 0.040            (J2000 equator)
+        n  11.34293126 +/- 0.00563          Peri.   68.99438 +/- 0.026
+        a423434.889 +/- 140                 Node     4.54045 +/- 0.00026
+        e   0.4862783 +/- 6.5e-5            Incl.   28.58676 +/- 0.00029
+    """
+    NUM = r'[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?'
+
+    # --- Epoch ---
+    # Try JDT first (most reliable)
+    epoch_str = None
+    jdt_m = re.search(r'JDT\s+(' + NUM + r')', text)
+    if jdt_m:
+        from astropy.time import Time
+        jd_val = float(jdt_m.group(1))
+        epoch_str = Time(jd_val, format='jd', scale='tt').utc.isot
+
+    if not epoch_str:
+        # Try "Epoch YYYY Mon DD.D TT"
+        epoch_m = re.search(
+            r'Epoch\s+(\d{4})\s+(\w+)\s+(\d+\.?\d*)\s+TT', text)
+        if epoch_m:
+            from astropy.time import Time
+            year = int(epoch_m.group(1))
+            mon_str = epoch_m.group(2)
+            day_frac = float(epoch_m.group(3))
+            months = {'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4,
+                      'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8,
+                      'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12}
+            month = months.get(mon_str[:3], 1)
+            day_int = int(day_frac)
+            day_rem = day_frac - day_int
+            iso = f"{year:04d}-{month:02d}-{day_int:02d}T00:00:00"
+            from astropy.time import TimeDelta
+            t = Time(iso, scale='tt') + TimeDelta(day_rem * 86400, format='sec')
+            epoch_str = t.utc.isot
+
+    if not epoch_str:
+        return jsonify({'success': False,
+                        'error': 'Cannot parse epoch from Find_Orb text'}), 400
+
+    # --- Orbital elements ---
+    # M (mean anomaly) - line starts with M followed by spaces and number
+    M_m = re.search(r'^\s*M\s+(' + NUM + r')', text, re.MULTILINE)
+    # a (semi-major axis) - "a" immediately followed by number or spaces then number
+    a_m = re.search(r'^\s*a\s*(' + NUM + r')', text, re.MULTILINE)
+    # e (eccentricity)
+    e_m = re.search(r'^\s*e\s+(' + NUM + r')', text, re.MULTILINE)
+    # Peri. (argument of periapsis)
+    peri_m = re.search(r'Peri\.\s+(' + NUM + r')', text)
+    # Node (RAAN)
+    node_m = re.search(r'Node\s+(' + NUM + r')', text)
+    # Incl. (inclination)
+    incl_m = re.search(r'Incl\.\s+(' + NUM + r')', text)
+
+    missing = []
+    if not M_m: missing.append('M')
+    if not a_m: missing.append('a')
+    if not e_m: missing.append('e')
+    if not peri_m: missing.append('Peri')
+    if not node_m: missing.append('Node')
+    if not incl_m: missing.append('Incl')
+    if missing:
+        return jsonify({'success': False,
+                        'error': f'Cannot parse: {", ".join(missing)}'}), 400
+
+    return jsonify({
+        'success': True,
+        'format': 'findorb',
+        'epoch': epoch_str,
+        'keplerian': {
+            'a': float(a_m.group(1)),
+            'e': float(e_m.group(1)),
+            'i': float(incl_m.group(1)),
+            'raan': float(node_m.group(1)),
+            'argp': float(peri_m.group(1)),
+            'anomaly': float(M_m.group(1)),
+            'anomaly_type': 'mean',
+        },
+    })
 
 
 @app.route('/api/propagate', methods=['POST'])
