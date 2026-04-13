@@ -301,7 +301,14 @@
                         <div class="form-group"><label>Inclination i (deg)</label><input type="number" id="kep_i" step="any" value="90.0"></div>
                         <div class="form-group"><label>RAAN (deg)</label><input type="number" id="kep_raan" step="any" value="0.0"></div>
                         <div class="form-group"><label>Arg. Periapsis (deg)</label><input type="number" id="kep_argp" step="any" value="0.0"></div>
-                        <div class="form-group"><label>True Anomaly (deg)</label><input type="number" id="kep_nu" step="any" value="0.0"></div>
+                        <div class="form-group">
+                            <label>
+                                <input type="radio" name="anomaly_type" value="true" checked onchange="updateAnomalyLabel()"> True Anomaly
+                                <input type="radio" name="anomaly_type" value="mean" onchange="updateAnomalyLabel()"> Mean Anomaly
+                            </label>
+                            <label id="anomaly_label">True Anomaly (deg)</label>
+                            <input type="number" id="kep_anomaly" step="any" value="0.0">
+                        </div>
                     </div>
                 </div>
             </div>
@@ -457,6 +464,11 @@
             document.getElementById('tab-' + tabId).classList.add('active');
         }
 
+        function updateAnomalyLabel() {
+            const type = document.querySelector('input[name="anomaly_type"]:checked').value;
+            document.getElementById('anomaly_label').textContent = type === 'mean' ? 'Mean Anomaly (deg)' : 'True Anomaly (deg)';
+        }
+
         function toggleInputType() {
             const type = document.querySelector('input[name="input_type"]:checked').value;
             document.getElementById('state-vector-input').style.display =
@@ -539,7 +551,8 @@
                     i: parseFloat(document.getElementById('kep_i').value),
                     raan: parseFloat(document.getElementById('kep_raan').value),
                     argp: parseFloat(document.getElementById('kep_argp').value),
-                    nu: parseFloat(document.getElementById('kep_nu').value),
+                    anomaly: parseFloat(document.getElementById('kep_anomaly').value),
+                    anomaly_type: document.querySelector('input[name="anomaly_type"]:checked').value,
                 };
             }
             return data;

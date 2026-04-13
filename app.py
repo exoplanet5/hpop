@@ -20,6 +20,7 @@ import re
 from propagator import (
     propagate, keplerian_to_cartesian, cartesian_to_keplerian,
     convert_earth_to_moon, convert_moon_to_earth,
+    mean_to_true_anomaly,
     HPOPConfig,
 )
 from ephemeris import compute_observation_ephemeris
@@ -62,10 +63,17 @@ def _parse_state_from_request(data, epoch):
     if input_type == 'keplerian':
         kep = data['keplerian']
         gm = GM_MOON if ref_frame == 'moon_icrf' else 398600.4418
+        ecc = float(kep['e'])
+        anomaly_val = float(kep.get('anomaly', kep.get('nu', 0.0)))
+        anomaly_type = kep.get('anomaly_type', 'true')
+        if anomaly_type == 'mean':
+            nu = mean_to_true_anomaly(anomaly_val, ecc)
+        else:
+            nu = anomaly_val
         state0 = keplerian_to_cartesian(
-            float(kep['a']), float(kep['e']),
+            float(kep['a']), ecc,
             float(kep['i']), float(kep['raan']),
-            float(kep['argp']), float(kep['nu']),
+            float(kep['argp']), nu,
             gm=gm
         )
     else:
@@ -302,10 +310,17 @@ def api_convert():
 
         if direction == 'kep_to_cart':
             kep = data['keplerian']
+            ecc = float(kep['e'])
+            anomaly_val = float(kep.get('anomaly', kep.get('nu', 0.0)))
+            anomaly_type = kep.get('anomaly_type', 'true')
+            if anomaly_type == 'mean':
+                nu = mean_to_true_anomaly(anomaly_val, ecc)
+            else:
+                nu = anomaly_val
             state = keplerian_to_cartesian(
-                float(kep['a']), float(kep['e']),
+                float(kep['a']), ecc,
                 float(kep['i']), float(kep['raan']),
-                float(kep['argp']), float(kep['nu']),
+                float(kep['argp']), nu,
                 gm=GM_MOON
             )
             return jsonify({

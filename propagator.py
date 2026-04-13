@@ -80,6 +80,35 @@ def convert_moon_to_earth(state_moon_icrf, epoch):
     return state_earth
 
 
+def mean_to_true_anomaly(M_deg, e, tol=1e-14, max_iter=50):
+    """Convert mean anomaly to true anomaly via Kepler's equation.
+
+    Parameters
+    ----------
+    M_deg : float
+        Mean anomaly [deg].
+    e : float
+        Eccentricity.
+
+    Returns
+    -------
+    nu_deg : float
+        True anomaly [deg].
+    """
+    M = np.radians(M_deg) % (2 * np.pi)
+    # Solve Kepler's equation M = E - e*sin(E) with Newton-Raphson
+    E = M + e * np.sin(M)  # initial guess
+    for _ in range(max_iter):
+        dE = (M - E + e * np.sin(E)) / (1 - e * np.cos(E))
+        E += dE
+        if abs(dE) < tol:
+            break
+    # E -> true anomaly
+    nu = 2 * np.arctan2(np.sqrt(1 + e) * np.sin(E / 2),
+                         np.sqrt(1 - e) * np.cos(E / 2))
+    return np.degrees(nu) % 360
+
+
 def keplerian_to_cartesian(a, e, i, raan, argp, nu, gm=GM_MOON):
     """Convert Keplerian elements to Cartesian state vector.
 
