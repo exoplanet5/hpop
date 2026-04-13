@@ -514,7 +514,6 @@
                     toggleInputType();
                     // Find_Orb uses J2000 equator = Earth ICRF
                     document.getElementById('ref_frame').value = 'earth_icrf';
-                    alert('Find_Orb elements parsed. Input switched to Keplerian (Mean Anomaly). Epoch set to ' + data.epoch);
                 } else {
                     // XML state vector
                     document.getElementById('sv_x').value = data.state[0];
