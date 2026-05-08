@@ -249,11 +249,12 @@
                             <label><input type="radio" name="input_type" value="keplerian" onchange="toggleInputType()"> Keplerian Elements</label>
                         </div>
                     </div>
-                    <div class="form-group" style="min-width: 160px;">
+                    <div class="form-group" style="min-width: 200px;">
                         <label>Input Reference Frame</label>
-                        <select id="ref_frame">
+                        <select id="ref_frame" onchange="updateInputUnits()">
                             <option value="earth_icrf" selected>Earth ICRF</option>
                             <option value="moon_icrf">Moon ICRF</option>
+                            <option value="sun_ecliptic">Sun J2000 ecliptic (AU)</option>
                         </select>
                     </div>
                 </div>
@@ -285,18 +286,18 @@
 
                 <div id="state-vector-input">
                     <div class="form-grid">
-                        <div class="form-group"><label>X (km)</label><input type="number" id="sv_x" step="any" value="-371565.057"></div>
-                        <div class="form-group"><label>Y (km)</label><input type="number" id="sv_y" step="any" value="170605.664"></div>
-                        <div class="form-group"><label>Z (km)</label><input type="number" id="sv_z" step="any" value="73749.974"></div>
-                        <div class="form-group"><label>VX (km/s)</label><input type="number" id="sv_vx" step="any" value="-0.6666"></div>
-                        <div class="form-group"><label>VY (km/s)</label><input type="number" id="sv_vy" step="any" value="-0.5211"></div>
-                        <div class="form-group"><label>VZ (km/s)</label><input type="number" id="sv_vz" step="any" value="-0.3480"></div>
+                        <div class="form-group"><label>X (<span class="sv-pos-unit">km</span>)</label><input type="number" id="sv_x" step="any" value="-371565.057"></div>
+                        <div class="form-group"><label>Y (<span class="sv-pos-unit">km</span>)</label><input type="number" id="sv_y" step="any" value="170605.664"></div>
+                        <div class="form-group"><label>Z (<span class="sv-pos-unit">km</span>)</label><input type="number" id="sv_z" step="any" value="73749.974"></div>
+                        <div class="form-group"><label>VX (<span class="sv-vel-unit">km/s</span>)</label><input type="number" id="sv_vx" step="any" value="-0.6666"></div>
+                        <div class="form-group"><label>VY (<span class="sv-vel-unit">km/s</span>)</label><input type="number" id="sv_vy" step="any" value="-0.5211"></div>
+                        <div class="form-group"><label>VZ (<span class="sv-vel-unit">km/s</span>)</label><input type="number" id="sv_vz" step="any" value="-0.3480"></div>
                     </div>
                 </div>
 
                 <div id="keplerian-input" style="display:none;">
                     <div class="form-grid">
-                        <div class="form-group"><label>Semi-major Axis a (km)</label><input type="number" id="kep_a" step="any" value="1838.0"></div>
+                        <div class="form-group"><label>Semi-major Axis a (<span id="kep_a_unit">km</span>)</label><input type="number" id="kep_a" step="any" value="1838.0"></div>
                         <div class="form-group"><label>Eccentricity e</label><input type="number" id="kep_e" step="any" value="0.01"></div>
                         <div class="form-group"><label>Inclination i (deg)</label><input type="number" id="kep_i" step="any" value="90.0"></div>
                         <div class="form-group"><label>RAAN (deg)</label><input type="number" id="kep_raan" step="any" value="0.0"></div>
@@ -469,6 +470,16 @@
             document.getElementById('anomaly_label').textContent = type === 'mean' ? 'Mean Anomaly (deg)' : 'True Anomaly (deg)';
         }
 
+        function updateInputUnits() {
+            const frame = document.getElementById('ref_frame').value;
+            const isAU = (frame === 'sun_ecliptic');
+            // Keplerian semi-major axis unit
+            document.getElementById('kep_a_unit').textContent = isAU ? 'AU' : 'km';
+            // State vector position/velocity units
+            document.querySelectorAll('.sv-pos-unit').forEach(el => el.textContent = isAU ? 'AU' : 'km');
+            document.querySelectorAll('.sv-vel-unit').forEach(el => el.textContent = isAU ? 'AU/day' : 'km/s');
+        }
+
         function toggleInputType() {
             const type = document.querySelector('input[name="input_type"]:checked').value;
             document.getElementById('state-vector-input').style.display =
@@ -512,8 +523,9 @@
                     // Switch to Keplerian input mode
                     document.querySelector('input[name="input_type"][value="keplerian"]').checked = true;
                     toggleInputType();
-                    // Find_Orb uses J2000 equator = Earth ICRF
-                    document.getElementById('ref_frame').value = 'earth_icrf';
+                    // Set frame from parser ('earth_icrf' or 'sun_ecliptic')
+                    document.getElementById('ref_frame').value = data.frame || 'earth_icrf';
+                    updateInputUnits();
                 } else {
                     // XML state vector
                     document.getElementById('sv_x').value = data.state[0];

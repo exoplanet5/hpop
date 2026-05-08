@@ -20,9 +20,12 @@ import re
 from propagator import (
     propagate, keplerian_to_cartesian, cartesian_to_keplerian,
     convert_earth_to_moon, convert_moon_to_earth,
+    convert_helio_ecliptic_to_earth_icrf,
     mean_to_true_anomaly,
+    AU_KM,
     HPOPConfig,
 )
+from gravity import GM_SUN
 from ephemeris import compute_observation_ephemeris
 from time_utils import parse_epoch
 from astropy.time import TimeDelta
@@ -62,7 +65,13 @@ def _parse_state_from_request(data, epoch):
 
     if input_type == 'keplerian':
         kep = data['keplerian']
-        gm = GM_MOON if ref_frame == 'moon_icrf' else 398600.4418
+        if ref_frame == 'moon_icrf':
+            gm = GM_MOON
+        elif ref_frame == 'sun_ecliptic':
+            gm = GM_SUN
+        else:
+            gm = 398600.4418  # GM_Earth, for earth_icrf
+
         ecc = float(kep['e'])
         anomaly_val = float(kep.get('anomaly', kep.get('nu', 0.0)))
         anomaly_type = kep.get('anomaly_type', 'true')
@@ -70,17 +79,30 @@ def _parse_state_from_request(data, epoch):
             nu = mean_to_true_anomaly(anomaly_val, ecc)
         else:
             nu = anomaly_val
+
+        a_in = float(kep['a'])
+        # For sun_ecliptic, semi-major axis is in AU; convert to km
+        a_km = a_in * AU_KM if ref_frame == 'sun_ecliptic' else a_in
+
         state0 = keplerian_to_cartesian(
-            float(kep['a']), ecc,
+            a_km, ecc,
             float(kep['i']), float(kep['raan']),
             float(kep['argp']), nu,
             gm=gm
         )
     else:
         state0 = np.array([float(x) for x in data['state']])
+        # State vector input: if sun_ecliptic, positions in AU, velocities in AU/day
+        if ref_frame == 'sun_ecliptic':
+            state0[:3] *= AU_KM
+            state0[3:] *= AU_KM / 86400.0
 
-    # Convert to Moon-centered ICRF if needed
-    if ref_frame != 'moon_icrf':
+    # Convert to Earth ICRF first (if needed), then to Moon-centered ICRF
+    if ref_frame == 'sun_ecliptic':
+        state0 = convert_helio_ecliptic_to_earth_icrf(state0, epoch)
+        state0 = convert_earth_to_moon(state0, epoch)
+    elif ref_frame != 'moon_icrf':
+        # earth_icrf
         state0 = convert_earth_to_moon(state0, epoch)
 
     return state0
@@ -204,10 +226,18 @@ def _parse_findorb(text):
         return jsonify({'success': False,
                         'error': f'Cannot parse: {", ".join(missing)}'}), 400
 
+    # Frame detection: "(J2000 ecliptic)" -> heliocentric ecliptic, AU
+    # Otherwise default to "(J2000 equator)" -> Earth ICRF, km
+    if re.search(r'\(\s*J2000\s+ecliptic\s*\)', text, re.IGNORECASE):
+        frame = 'sun_ecliptic'
+    else:
+        frame = 'earth_icrf'
+
     return jsonify({
         'success': True,
         'format': 'findorb',
         'epoch': epoch_str,
+        'frame': frame,
         'keplerian': {
             'a': float(a_m.group(1)),
             'e': float(e_m.group(1)),

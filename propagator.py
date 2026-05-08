@@ -12,6 +12,11 @@ from astropy.time import Time, TimeDelta
 from astropy.coordinates import (
     solar_system_ephemeris,
     get_body_barycentric_posvel,
+    HeliocentricMeanEcliptic,
+    GCRS,
+    SkyCoord,
+    CartesianRepresentation,
+    CartesianDifferential,
 )
 import astropy.units as u
 
@@ -78,6 +83,44 @@ def convert_moon_to_earth(state_moon_icrf, epoch):
     state_earth[:3] = state_moon_icrf[:3] + moon_geo_pos
     state_earth[3:] = state_moon_icrf[3:] + moon_geo_vel
     return state_earth
+
+
+# J2000 mean obliquity of the ecliptic (IAU 1976), degrees
+OBLIQUITY_J2000_DEG = 23.4392911
+AU_KM = 149597870.7
+
+
+def convert_helio_ecliptic_to_earth_icrf(state_helio_ecl, epoch):
+    """Convert heliocentric J2000 mean ecliptic state to Earth-centered ICRF.
+
+    Uses astropy's HeliocentricMeanEcliptic(equinox='J2000') -> GCRS
+    transformation, which accounts for the J2000 mean obliquity (IAU 2006),
+    the FK5/ICRS frame bias, and the heliocentric -> geocentric translation
+    via JPL ephemeris.
+
+    Parameters
+    ----------
+    state_helio_ecl : ndarray (6,)
+        [x, y, z, vx, vy, vz] in heliocentric J2000 ecliptic, km and km/s.
+    epoch : astropy.time.Time
+
+    Returns
+    -------
+    state_earth_icrf : ndarray (6,)
+        [x, y, z, vx, vy, vz] in Earth-centered ICRF (GCRS), km, km/s.
+    """
+    solar_system_ephemeris.set('builtin')
+    r = state_helio_ecl[:3]
+    v = state_helio_ecl[3:]
+    helio = SkyCoord(
+        CartesianRepresentation(r[0]*u.km, r[1]*u.km, r[2]*u.km).with_differentials(
+            CartesianDifferential(v[0]*u.km/u.s, v[1]*u.km/u.s, v[2]*u.km/u.s)),
+        frame=HeliocentricMeanEcliptic(equinox='J2000', obstime=epoch),
+    )
+    gcrs = helio.transform_to(GCRS(obstime=epoch))
+    r_gcrs = gcrs.cartesian.xyz.to(u.km).value
+    v_gcrs = gcrs.velocity.d_xyz.to(u.km / u.s).value
+    return np.concatenate([r_gcrs, v_gcrs])
 
 
 def mean_to_true_anomaly(M_deg, e, tol=1e-14, max_iter=50):
