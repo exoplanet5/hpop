@@ -143,8 +143,10 @@
         thead th {
             background: #141c2b;
             color: #7ec8e3;
-            padding: 8px 10px;
+            padding: 6px 10px;
             text-align: left;
+            vertical-align: bottom;
+            line-height: 1.25;
             position: sticky;
             top: 0;
             z-index: 1;
@@ -336,6 +338,7 @@
             </div>
         </div>
 
+        <div class="two-col">
         <!-- Observer -->
         <div class="panel">
             <h3>Observer Location</h3>
@@ -363,12 +366,13 @@
         <!-- Ephemeris window -->
         <div class="panel">
             <h3>Ephemeris Window</h3>
-            <p class="note">Propagation runs from the state epoch to the end of this window. The start may not precede the state epoch (blank = start at the epoch).</p>
+            <p class="note">Start defaults to the state epoch and may not precede it; propagation covers the whole window.</p>
             <div class="form-grid">
-                <div class="form-group"><label>Ephemeris Start (UTC ISOT)</label><input type="text" id="ephem_start" value="" placeholder="blank = state epoch"></div>
+                <div class="form-group"><label>Start (UTC)</label><input type="text" id="ephem_start" value="2026-03-02T00:00:00" placeholder="state epoch"></div>
                 <div class="form-group"><label>Duration (days)</label><input type="number" id="ephem_duration_days" step="any" value="1"></div>
-                <div class="form-group"><label>Ephemeris Step (s)</label><input type="number" id="ephem_step" value="60"></div>
+                <div class="form-group"><label>Step (s)</label><input type="number" id="ephem_step" value="60"></div>
             </div>
+        </div>
         </div>
 
         <div class="two-col">
@@ -459,6 +463,17 @@
             return name.replace(/[^A-Za-z0-9._-]+/g, '_');
         }
 
+        // Ephemeris start follows the epoch field until the user types their own start.
+        let epochSynced = byId('epoch').value;
+        function syncEphemStart() {
+            const start = byId('ephem_start');
+            if (!start.value.trim() || start.value.trim() === epochSynced) {
+                start.value = byId('epoch').value.trim();
+            }
+            epochSynced = byId('epoch').value.trim();
+        }
+        byId('epoch').addEventListener('input', syncEphemStart);
+
         function updateAnomalyLabel() {
             const type = document.querySelector('input[name="anomaly_type"]:checked').value;
             byId('anomaly_label').textContent = type === 'mean' ? 'Mean Anomaly (deg)' : 'True Anomaly (deg)';
@@ -523,6 +538,7 @@
                     byId('epoch').value = data.epoch;
                     byId('epoch_format').value = 'isot';
                     byId('epoch_scale').value = 'utc';
+                    syncEphemStart();
                     document.querySelector('input[name="input_type"][value="keplerian"]').checked = true;
                     toggleInputType();
                     byId('ref_frame').value = data.frame || 'earth_icrf';
@@ -540,6 +556,7 @@
                         byId('epoch').value = data.epoch;
                         byId('epoch_format').value = 'isot';
                         byId('epoch_scale').value = 'utc';
+                        syncEphemStart();
                         msg += ' Epoch set to ' + data.epoch + ' UTC.';
                     } else if (data.epoch_unparsed) {
                         msg += ' <EPOCH> "' + data.epoch_unparsed + '" not understood; set the epoch manually.';
@@ -635,7 +652,7 @@
                 `<div>Target: <strong>${res.target_name}</strong> &nbsp;|&nbsp; Observer: ${obsInfo} &nbsp;|&nbsp; ${data.n_points} points</div>
                  <div>Propagated ${res.prop_start} &rarr; ${res.prop_end} (${t.propagate_s} s, ${t.n_rhs_evals} force evaluations); ephemeris ${t.ephemeris_s} s; ephemeris source ${res.ephemeris_source}</div>`;
 
-            let html = '<table><thead><tr><th>Time (UTC)</th><th>RA (HMS)</th><th>DEC (DMS)</th><th>dRA (&quot;/min)</th><th>dDEC (&quot;/min)</th><th>Rate (&quot;/min)</th><th>PA (&deg;)</th><th>RA (&deg;)</th><th>DEC (&deg;)</th><th>Dist (km)</th><th>Lunar Elong (&deg;)</th><th>Alt (&deg;)</th><th>Az (&deg;)</th><th>Sky</th></tr></thead><tbody>';
+            let html = '<table><thead><tr><th>Time (UTC)</th><th>RA (HMS)</th><th>DEC (DMS)</th><th>dRA<br>(&quot;/min)</th><th>dDEC<br>(&quot;/min)</th><th>Rate<br>(&quot;/min)</th><th>PA<br>(&deg;)</th><th>RA (&deg;)</th><th>DEC (&deg;)</th><th>Dist (km)</th><th>Lunar<br>Elong (&deg;)</th><th>Alt (&deg;)</th><th>Az (&deg;)</th><th>Sky</th></tr></thead><tbody>';
             for (let idx = 0; idx < data.times_utc.length; idx++) {
                 const alt = data.altitude_deg[idx];
                 const az = data.azimuth_deg[idx];
@@ -768,6 +785,7 @@
         toggleInputType();
         updateInputUnits();
         toggleStateOutput();
+        syncEphemStart();
     </script>
 </body>
 </html>

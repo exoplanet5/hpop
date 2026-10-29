@@ -174,7 +174,10 @@ def _run_computation(data, want_states, want_ephemeris):
     prop_days = float(data.get('duration_days', data.get('duration', 0)) or 0)
     ephem_days = float(data.get('ephem_duration_days', prop_days or 1))
     ephem_start_str = str(data.get('ephem_start', '') or '').strip()
-    ephem_start = parse_epoch(ephem_start_str, 'isot', 'utc') if ephem_start_str else epoch
+    if not ephem_start_str or ephem_start_str == str(data['epoch']).strip():
+        ephem_start = epoch          # default: the state epoch, whatever its format/scale
+    else:
+        ephem_start = parse_epoch(ephem_start_str, None, 'utc')
     start_offset = float((ephem_start - epoch).sec)
 
     needed_sec = 0.0
