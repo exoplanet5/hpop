@@ -3,7 +3,13 @@ High Precision Orbit Propagator (HPOP) for cislunar spacecraft.
 
 Propagates spacecraft state in Moon-centered ICRF frame using
 numerical integration with high-precision perturbation models.
+
+Solar-system body positions come from a JPL DE kernel when one is available
+(see `_configure_ephemeris`), otherwise from astropy's analytic 'builtin'
+model, which differs from DE440 by up to ~18 km (~9 arcsec) for the Moon.
 """
+
+import os
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -11,6 +17,7 @@ from scipy.interpolate import CubicSpline
 from astropy.time import Time, TimeDelta
 from astropy.coordinates import (
     solar_system_ephemeris,
+    get_body_barycentric,
     get_body_barycentric_posvel,
     HeliocentricMeanEcliptic,
     GCRS,
@@ -32,62 +39,103 @@ from lunar_coeffs import get_coefficients, R_MOON
 from time_utils import parse_epoch, time_to_jd_tdb
 
 
+# J2000 mean obliquity of the ecliptic (IAU 1976), degrees
+OBLIQUITY_J2000_DEG = 23.4392911
+AU_KM = 149597870.7
+
+# Lunar harmonics are negligible beyond this Moon-centred distance
+HARMONICS_CUTOFF_KM = 50000.0
+
+
+# ---------------------------------------------------------------------------
+# Solar-system ephemeris source
+# ---------------------------------------------------------------------------
+
+def _configure_ephemeris():
+    """Select the solar-system ephemeris used by every astropy body lookup.
+
+    Search order:
+      1. $HPOP_EPHEMERIS (path to an SPK kernel, or the word 'builtin')
+      2. ~/JPLDE/de440s.bsp  (shared local kernel store)
+      3. <project dir>/de440s.bsp
+      4. astropy 'builtin' analytic model
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = []
+    env = os.environ.get('HPOP_EPHEMERIS', '').strip()
+    if env:
+        candidates.append(env)
+    candidates.append(os.path.expanduser('~/JPLDE/de440s.bsp'))
+    candidates.append(os.path.join(here, 'de440s.bsp'))
+
+    for cand in candidates:
+        if cand.lower() == 'builtin':
+            break
+        if os.path.isfile(cand):
+            try:
+                solar_system_ephemeris.set('file://' + os.path.abspath(cand))
+                print(f"[HPOP] solar-system ephemeris: {cand}")
+                return os.path.basename(cand)
+            except Exception as exc:  # pragma: no cover - depends on local files
+                print(f"[HPOP] could not load ephemeris kernel {cand}: {exc}")
+
+    solar_system_ephemeris.set('builtin')
+    print("[HPOP] solar-system ephemeris: astropy builtin (analytic; Moon error up to ~18 km)")
+    return 'builtin'
+
+
+EPHEMERIS_NAME = _configure_ephemeris()
+
+
+# ---------------------------------------------------------------------------
+# Frame conversions
+# ---------------------------------------------------------------------------
+
+def _moon_relative_to_earth(epoch):
+    """Moon position and velocity relative to Earth (ICRF), km and km/s.
+
+    Works for a scalar Time (returns (3,) arrays) or a Time array of length N
+    (returns (N, 3) arrays).
+    """
+    moon_pos, moon_vel = get_body_barycentric_posvel('moon', epoch)
+    earth_pos, earth_vel = get_body_barycentric_posvel('earth', epoch)
+    pos = (moon_pos.xyz - earth_pos.xyz).to_value(u.km)
+    vel = (moon_vel.xyz - earth_vel.xyz).to_value(u.km / u.s)
+    return np.moveaxis(pos, 0, -1), np.moveaxis(vel, 0, -1)
+
+
 def convert_earth_to_moon(state_earth_icrf, epoch):
     """Convert state from Earth-centered ICRF to Moon-centered ICRF.
 
     Parameters
     ----------
-    state_earth_icrf : ndarray (6,)
+    state_earth_icrf : ndarray (6,) or (N, 6)
         [x, y, z, vx, vy, vz] in Earth-centered ICRF, km and km/s.
     epoch : astropy.time.Time
+        Scalar for a single state, or length-N array matching the rows.
 
     Returns
     -------
-    state_moon_icrf : ndarray (6,)
-        [x, y, z, vx, vy, vz] in Moon-centered ICRF, km and km/s.
+    state_moon_icrf : ndarray, same shape as input
     """
-    solar_system_ephemeris.set('builtin')
-    moon_pos, moon_vel = get_body_barycentric_posvel('moon', epoch)
-    earth_pos, earth_vel = get_body_barycentric_posvel('earth', epoch)
-
-    # Moon position/velocity relative to Earth (ICRS/ICRF)
-    moon_geo_pos = (moon_pos.xyz - earth_pos.xyz).to(u.km).value
-    moon_geo_vel = (moon_vel.xyz - earth_vel.xyz).to(u.km / u.s).value
-
-    state_moon = np.zeros(6)
-    state_moon[:3] = state_earth_icrf[:3] - moon_geo_pos
-    state_moon[3:] = state_earth_icrf[3:] - moon_geo_vel
-    return state_moon
+    moon_pos, moon_vel = _moon_relative_to_earth(epoch)
+    out = np.array(state_earth_icrf, dtype=float, copy=True)
+    out[..., :3] -= moon_pos
+    out[..., 3:] -= moon_vel
+    return out
 
 
 def convert_moon_to_earth(state_moon_icrf, epoch):
     """Convert state from Moon-centered ICRF to Earth-centered ICRF.
 
-    Parameters
-    ----------
-    state_moon_icrf : ndarray (6,)
-    epoch : astropy.time.Time
-
-    Returns
-    -------
-    state_earth_icrf : ndarray (6,)
+    Accepts a single state with a scalar epoch, or an (N, 6) array with a
+    length-N Time array (one ephemeris lookup for all rows).
     """
-    solar_system_ephemeris.set('builtin')
-    moon_pos, moon_vel = get_body_barycentric_posvel('moon', epoch)
-    earth_pos, earth_vel = get_body_barycentric_posvel('earth', epoch)
-
-    moon_geo_pos = (moon_pos.xyz - earth_pos.xyz).to(u.km).value
-    moon_geo_vel = (moon_vel.xyz - earth_vel.xyz).to(u.km / u.s).value
-
-    state_earth = np.zeros(6)
-    state_earth[:3] = state_moon_icrf[:3] + moon_geo_pos
-    state_earth[3:] = state_moon_icrf[3:] + moon_geo_vel
-    return state_earth
-
-
-# J2000 mean obliquity of the ecliptic (IAU 1976), degrees
-OBLIQUITY_J2000_DEG = 23.4392911
-AU_KM = 149597870.7
+    moon_pos, moon_vel = _moon_relative_to_earth(epoch)
+    out = np.array(state_moon_icrf, dtype=float, copy=True)
+    out[..., :3] += moon_pos
+    out[..., 3:] += moon_vel
+    return out
 
 
 def convert_helio_ecliptic_to_earth_icrf(state_helio_ecl, epoch):
@@ -96,7 +144,7 @@ def convert_helio_ecliptic_to_earth_icrf(state_helio_ecl, epoch):
     Uses astropy's HeliocentricMeanEcliptic(equinox='J2000') -> GCRS
     transformation, which accounts for the J2000 mean obliquity (IAU 2006),
     the FK5/ICRS frame bias, and the heliocentric -> geocentric translation
-    via JPL ephemeris.
+    via the configured solar-system ephemeris.
 
     Parameters
     ----------
@@ -109,7 +157,6 @@ def convert_helio_ecliptic_to_earth_icrf(state_helio_ecl, epoch):
     state_earth_icrf : ndarray (6,)
         [x, y, z, vx, vy, vz] in Earth-centered ICRF (GCRS), km, km/s.
     """
-    solar_system_ephemeris.set('builtin')
     r = state_helio_ecl[:3]
     v = state_helio_ecl[3:]
     helio = SkyCoord(
@@ -118,10 +165,14 @@ def convert_helio_ecliptic_to_earth_icrf(state_helio_ecl, epoch):
         frame=HeliocentricMeanEcliptic(equinox='J2000', obstime=epoch),
     )
     gcrs = helio.transform_to(GCRS(obstime=epoch))
-    r_gcrs = gcrs.cartesian.xyz.to(u.km).value
-    v_gcrs = gcrs.velocity.d_xyz.to(u.km / u.s).value
+    r_gcrs = gcrs.cartesian.xyz.to_value(u.km)
+    v_gcrs = gcrs.velocity.d_xyz.to_value(u.km / u.s)
     return np.concatenate([r_gcrs, v_gcrs])
 
+
+# ---------------------------------------------------------------------------
+# Orbital elements
+# ---------------------------------------------------------------------------
 
 def mean_to_true_anomaly(M_deg, e, tol=1e-14, max_iter=50):
     """Convert mean anomaly to true anomaly via Kepler's equation.
@@ -271,42 +322,31 @@ def cartesian_to_keplerian(state, gm=GM_MOON):
     else:
         nu = 0.0
 
-    return {'a': a, 'e': e, 'i': inc, 'raan': raan, 'argp': argp, 'nu': nu}
+    return {'a': float(a), 'e': float(e), 'i': float(inc),
+            'raan': float(raan), 'argp': float(argp), 'nu': float(nu)}
 
+
+# ---------------------------------------------------------------------------
+# Propagation
+# ---------------------------------------------------------------------------
 
 def _precompute_third_body_positions(t_start_jd_tdb, duration_sec, body_interval=600.0):
-    """Precompute Earth and Sun positions relative to Moon at regular intervals.
+    """Tabulate Earth and Sun positions relative to the Moon and spline them.
 
-    Returns cubic spline interpolators for each body.
+    One vectorized ephemeris lookup per body; returns a single CubicSpline
+    over the (N, 6) array [earth_xyz, sun_xyz] parameterised by elapsed
+    seconds, so the ODE right-hand side needs one spline evaluation.
     """
-    solar_system_ephemeris.set('builtin')
-
     n_pts = max(int(duration_sec / body_interval) + 2, 10)
-    dt_array = np.linspace(0, duration_sec, n_pts)
-    jd_array = t_start_jd_tdb + dt_array / 86400.0
+    dt_array = np.linspace(0.0, duration_sec, n_pts)
+    t = Time(t_start_jd_tdb + dt_array / 86400.0, format='jd', scale='tdb')
 
-    earth_pos = np.zeros((n_pts, 3))
-    sun_pos = np.zeros((n_pts, 3))
+    moon = get_body_barycentric('moon', t).xyz.to_value(u.km).T
+    earth = get_body_barycentric('earth', t).xyz.to_value(u.km).T
+    sun = get_body_barycentric('sun', t).xyz.to_value(u.km).T
 
-    for idx, jd in enumerate(jd_array):
-        t = Time(jd, format='jd', scale='tdb')
-        moon_bc = get_body_barycentric_posvel('moon', t)[0].xyz.to(u.km).value
-        earth_bc = get_body_barycentric_posvel('earth', t)[0].xyz.to(u.km).value
-        sun_bc = get_body_barycentric_posvel('sun', t)[0].xyz.to(u.km).value
-
-        earth_pos[idx] = earth_bc - moon_bc
-        sun_pos[idx] = sun_bc - moon_bc
-
-    # Build cubic splines (parameter: elapsed seconds from t_start)
-    earth_interp = [CubicSpline(dt_array, earth_pos[:, k]) for k in range(3)]
-    sun_interp = [CubicSpline(dt_array, sun_pos[:, k]) for k in range(3)]
-
-    return earth_interp, sun_interp
-
-
-def _get_interp_pos(interp_list, t_elapsed):
-    """Evaluate interpolated position."""
-    return np.array([interp_list[k](t_elapsed) for k in range(3)])
+    rel = np.hstack([earth - moon, sun - moon])  # (N, 6)
+    return CubicSpline(dt_array, rel, axis=0)
 
 
 class HPOPConfig:
@@ -337,116 +377,109 @@ def propagate(state0, epoch, duration_sec, step_sec=60.0, config=None,
     epoch : astropy.time.Time
         Initial epoch.
     duration_sec : float
-        Propagation duration [seconds].
+        Propagation duration [seconds], must be positive.
     step_sec : float
-        Output step size [seconds].
+        Output grid step [seconds]. The integrator chooses its own internal
+        steps; the dense output ('sol') can be evaluated at any time within
+        the span.
     config : HPOPConfig or None
         Propagation configuration.
     progress_callback : callable or None
-        Called with (fraction_complete,) for progress updates.
+        Unused; kept for API compatibility.
 
     Returns
     -------
     result : dict
-        'times': list of astropy.time.Time
-        'states': ndarray (N, 6) in km, km/s
-        'keplerian': list of dicts with orbital elements
-        'epoch': initial epoch
+        'times'        astropy Time array (N,)
+        'states'       ndarray (N, 6) in km, km/s (Moon-centered ICRF)
+        't_sec'        ndarray (N,) seconds since epoch
+        'epoch'        initial epoch
+        'duration_sec' total span in seconds
+        'sol'          scipy OdeResult (use result['sol'].sol(t) for dense output)
+        'n_rhs_evals'  number of right-hand-side evaluations
     """
     if config is None:
         config = HPOPConfig()
+    if duration_sec <= 0:
+        raise ValueError("Propagation duration must be positive")
 
-    # Precompute gravity coefficients
+    # Gravity coefficients
     C, S = get_coefficients(config.gravity_degree)
+    degree = config.gravity_degree
 
-    # Get initial JD TDB
+    # Initial JD TDB
     t0_jd_tdb = time_to_jd_tdb(epoch)
 
-    # Precompute third-body ephemeris
-    earth_interp = sun_interp = None
-    if config.earth_gravity or config.sun_gravity or config.srp:
-        earth_interp, sun_interp = _precompute_third_body_positions(
-            t0_jd_tdb, duration_sec
-        )
+    # Third-body ephemeris (single spline over [earth_xyz, sun_xyz])
+    need_bodies = config.earth_gravity or config.sun_gravity or config.srp
+    body_interp = _precompute_third_body_positions(t0_jd_tdb, duration_sec) if need_bodies else None
+
+    use_harm = config.lunar_harmonics
+    use_earth = config.earth_gravity
+    use_sun = config.sun_gravity
+    use_srp = config.srp
+    cr = config.cr
+    area_mass = config.area_mass_ratio
 
     def equations_of_motion(t_elapsed, y):
-        """Right-hand side of the ODE system.
-
-        t_elapsed is seconds since epoch.
-        y = [x, y, z, vx, vy, vz]
-        """
+        """Right-hand side: t_elapsed in seconds since epoch, y = [r, v]."""
         pos = y[:3]
-        vel = y[3:6]
-        r = np.linalg.norm(pos)
+        r = np.sqrt(pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2])
 
         # Central body (Moon point-mass)
         accel = central_body_accel(pos, GM_MOON)
 
         # Lunar non-spherical harmonics
-        if config.lunar_harmonics and r < 50000.0:
+        if use_harm and r < HARMONICS_CUTOFF_KM:
             jd_tdb = t0_jd_tdb + t_elapsed / 86400.0
             R_bf = lunar_body_fixed_rotation(jd_tdb)
-            pos_bf = R_bf @ pos
-            a_harm_bf = spherical_harmonic_accel(pos_bf, C, S, config.gravity_degree)
-            accel += R_bf.T @ a_harm_bf
+            a_harm_bf = spherical_harmonic_accel(R_bf @ pos, C, S, degree)
+            accel = accel + R_bf.T @ a_harm_bf
 
-        # Earth third-body
-        if config.earth_gravity and earth_interp is not None:
-            earth_pos = _get_interp_pos(earth_interp, t_elapsed)
-            accel += third_body_accel(pos, earth_pos, GM_EARTH)
+        if body_interp is not None:
+            bodies = body_interp(t_elapsed)
+            if use_earth:
+                accel = accel + third_body_accel(pos, bodies[:3], GM_EARTH)
+            if use_sun:
+                accel = accel + third_body_accel(pos, bodies[3:], GM_SUN)
+            if use_srp:
+                accel = accel + srp_accel(pos - bodies[3:], cr, area_mass)
 
-        # Sun third-body
-        if config.sun_gravity and sun_interp is not None:
-            sun_pos = _get_interp_pos(sun_interp, t_elapsed)
-            accel += third_body_accel(pos, sun_pos, GM_SUN)
+        out = np.empty(6)
+        out[:3] = y[3:6]
+        out[3:] = accel
+        return out
 
-        # Solar radiation pressure
-        if config.srp and sun_interp is not None:
-            sun_pos = _get_interp_pos(sun_interp, t_elapsed)
-            pos_sc_helio = pos - sun_pos
-            accel += srp_accel(pos_sc_helio, config.cr, config.area_mass_ratio)
+    # Output grid: multiples of step_sec, always ending exactly at duration_sec
+    t_eval = np.arange(0.0, duration_sec, step_sec)
+    if duration_sec - t_eval[-1] > 1e-6:
+        t_eval = np.append(t_eval, duration_sec)
+    else:
+        t_eval[-1] = duration_sec
 
-        return np.concatenate([vel, accel])
-
-    # Integration time span
-    t_span = (0.0, duration_sec)
-    t_eval = np.arange(0, duration_sec + step_sec * 0.5, step_sec)
-
-    # Solve ODE
     sol = solve_ivp(
         equations_of_motion,
-        t_span,
-        state0,
+        (0.0, duration_sec),
+        np.asarray(state0, dtype=float),
         method=config.integrator,
         t_eval=t_eval,
         rtol=config.rtol,
         atol=config.atol,
-        max_step=step_sec * 10,
         dense_output=True,
     )
 
     if not sol.success:
         raise RuntimeError(f"Integration failed: {sol.message}")
 
-    # Build output
     states = sol.y.T  # (N, 6)
     times = epoch + TimeDelta(sol.t, format='sec')
-
-    keplerian_list = []
-    for s in states:
-        try:
-            kep = cartesian_to_keplerian(s, GM_MOON)
-            keplerian_list.append(kep)
-        except Exception:
-            keplerian_list.append({
-                'a': float('nan'), 'e': float('nan'), 'i': float('nan'),
-                'raan': float('nan'), 'argp': float('nan'), 'nu': float('nan')
-            })
 
     return {
         'times': times,
         'states': states,
-        'keplerian': keplerian_list,
+        't_sec': sol.t,
         'epoch': epoch,
+        'duration_sec': float(duration_sec),
         'sol': sol,
+        'n_rhs_evals': int(sol.nfev),
     }

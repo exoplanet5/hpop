@@ -118,10 +118,53 @@ def lunar_body_fixed_rotation(t_jd_tdb):
     return R
 
 
+# ---------------------------------------------------------------------------
+# Spherical harmonics
+# ---------------------------------------------------------------------------
+
+_DEGREE_CACHE = {}
+
+
+def _degree_tables(max_degree):
+    """Return cached, degree-dependent constant arrays for the recursions and sums.
+
+    Returns
+    -------
+    a, b : ndarray (N, N)
+        Recursion coefficients for P(n, m) from P(n-1, m) and P(n-2, m).
+    fn, gn : ndarray (N,)
+        Sectorial / sub-sectorial seed coefficients.
+    n_col : ndarray (N, 1), m_row : ndarray (1, N)
+        Degree and order index arrays for broadcasting.
+    mask : ndarray (N, N)
+        1.0 where 2 <= n and m <= n, else 0.0.
+    """
+    tables = _DEGREE_CACHE.get(max_degree)
+    if tables is None:
+        N = max_degree + 1
+        n_col = np.arange(N, dtype=float)[:, None]
+        m_row = np.arange(N, dtype=float)[None, :]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            a = np.sqrt((4.0 * n_col * n_col - 1.0) / (n_col * n_col - m_row * m_row))
+            b = np.sqrt(((2.0 * n_col + 1.0) * ((n_col - 1.0) ** 2 - m_row * m_row))
+                        / ((2.0 * n_col - 3.0) * (n_col * n_col - m_row * m_row)))
+        a = np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
+        b = np.nan_to_num(b, nan=0.0, posinf=0.0, neginf=0.0)
+        n_vec = np.arange(N, dtype=float)
+        fn = np.sqrt((2.0 * n_vec + 1.0) / (2.0 * np.maximum(n_vec, 1.0)))
+        gn = np.sqrt(2.0 * n_vec + 1.0)
+        mask = np.tril(np.ones((N, N)))
+        mask[:2, :] = 0.0
+        tables = (a, b, fn, gn, n_col, m_row, mask)
+        _DEGREE_CACHE[max_degree] = tables
+    return tables
+
+
 def _legendre_and_deriv(max_degree, sin_phi, cos_phi):
     """Compute fully normalized associated Legendre functions and derivatives.
 
-    Uses recursive algorithm for numerical stability.
+    Standard forward recursion in degree n; each degree is evaluated for all
+    orders m at once, so the Python loop runs over n only.
 
     Parameters
     ----------
@@ -141,36 +184,29 @@ def _legendre_and_deriv(max_degree, sin_phi, cos_phi):
     N = max_degree + 1
     P = np.zeros((N, N))
     dP = np.zeros((N, N))
+    a, b, fn, gn, _, _, _ = _degree_tables(max_degree)
 
-    # Sectorial seed values
     P[0, 0] = 1.0
-    dP[0, 0] = 0.0
-
     if max_degree >= 1:
-        P[1, 0] = np.sqrt(3.0) * sin_phi
-        P[1, 1] = np.sqrt(3.0) * cos_phi
-        dP[1, 0] = np.sqrt(3.0) * cos_phi
-        dP[1, 1] = -np.sqrt(3.0) * sin_phi
+        s3 = np.sqrt(3.0)
+        P[1, 0] = s3 * sin_phi
+        P[1, 1] = s3 * cos_phi
+        dP[1, 0] = s3 * cos_phi
+        dP[1, 1] = -s3 * sin_phi
 
     for n in range(2, N):
         # Sectorial term P(n,n)
-        fn = np.sqrt((2.0 * n + 1.0) / (2.0 * n))
-        P[n, n] = fn * cos_phi * P[n - 1, n - 1]
-        dP[n, n] = fn * (cos_phi * dP[n - 1, n - 1] - sin_phi * P[n - 1, n - 1])
-
+        P[n, n] = fn[n] * cos_phi * P[n - 1, n - 1]
+        dP[n, n] = fn[n] * (cos_phi * dP[n - 1, n - 1] - sin_phi * P[n - 1, n - 1])
         # Sub-sectorial P(n, n-1)
-        gn = np.sqrt(2.0 * n + 1.0)
-        P[n, n - 1] = gn * sin_phi * P[n - 1, n - 1]
-        dP[n, n - 1] = gn * (sin_phi * dP[n - 1, n - 1] + cos_phi * P[n - 1, n - 1])
-
-    # Zonal and tesseral terms via recursion
-    for m in range(0, max_degree - 1):
-        for n in range(m + 2, N):
-            a_nm = np.sqrt((4.0 * n * n - 1.0) / (n * n - m * m))
-            b_nm = np.sqrt(((2.0 * n + 1.0) * ((n - 1.0) ** 2 - m * m)) /
-                           ((2.0 * n - 3.0) * (n * n - m * m)))
-            P[n, m] = a_nm * sin_phi * P[n - 1, m] - b_nm * P[n - 2, m]
-            dP[n, m] = a_nm * (sin_phi * dP[n - 1, m] + cos_phi * P[n - 1, m]) - b_nm * dP[n - 2, m]
+        P[n, n - 1] = gn[n] * sin_phi * P[n - 1, n - 1]
+        dP[n, n - 1] = gn[n] * (sin_phi * dP[n - 1, n - 1] + cos_phi * P[n - 1, n - 1])
+        # Zonal and tesseral terms, m = 0 .. n-2, all at once
+        mm = slice(0, n - 1)
+        an = a[n, mm]
+        bn = b[n, mm]
+        P[n, mm] = an * sin_phi * P[n - 1, mm] - bn * P[n - 2, mm]
+        dP[n, mm] = an * (sin_phi * dP[n - 1, mm] + cos_phi * P[n - 1, mm]) - bn * dP[n - 2, mm]
 
     return P, dP
 
@@ -178,12 +214,15 @@ def _legendre_and_deriv(max_degree, sin_phi, cos_phi):
 def spherical_harmonic_accel(pos_bf, C, S, max_degree, gm=GM_MOON, r_ref=R_MOON):
     """Compute gravitational acceleration from spherical harmonic expansion.
 
+    Only the non-spherical part (degree >= 2) is returned; the central
+    point-mass term is applied separately.
+
     Parameters
     ----------
     pos_bf : ndarray (3,)
         Position in body-fixed frame [km].
     C, S : ndarray
-        Normalized Stokes coefficients.
+        Normalized Stokes coefficients, at least (max_degree+1, max_degree+1).
     max_degree : int
         Maximum degree of expansion.
     gm : float
@@ -208,34 +247,26 @@ def spherical_harmonic_accel(pos_bf, C, S, max_degree, gm=GM_MOON, r_ref=R_MOON)
     cos_phi = xy / r if xy > 1e-15 else 1e-15
     lam = np.arctan2(y, x)
 
-    # Compute Legendre functions
+    N = max_degree + 1
     P, dP = _legendre_and_deriv(max_degree, sin_phi, cos_phi)
+    _, _, _, _, n_col, m_row, mask = _degree_tables(max_degree)
 
-    # Precompute cos(m*lambda) and sin(m*lambda)
-    cos_ml = np.zeros(max_degree + 1)
-    sin_ml = np.zeros(max_degree + 1)
-    for m in range(max_degree + 1):
-        cos_ml[m] = np.cos(m * lam)
-        sin_ml[m] = np.sin(m * lam)
+    ml = m_row * lam
+    cos_ml = np.cos(ml)
+    sin_ml = np.sin(ml)
 
-    # Acceleration components in spherical coordinates
+    Cn = C[:N, :N]
+    Sn = S[:N, :N]
+    cs = Cn * cos_ml + Sn * sin_ml
+    sc = Sn * cos_ml - Cn * sin_ml
+
+    # (R/r)^n weights, zero for n < 2 and m > n
+    W = mask * (r_ref / r) ** n_col
+
     # a_r = -dU/dr, a_phi = (1/r)*dU/dphi, a_lam = (1/(r*cos_phi))*dU/dlam
-    a_r = 0.0
-    a_phi = 0.0
-    a_lam = 0.0
-
-    rn = r_ref / r  # (R/r) accumulator
-    for n in range(2, max_degree + 1):
-        rn *= (r_ref / r)
-        for m in range(0, n + 1):
-            Cnm = C[n, m]
-            Snm = S[n, m]
-            cs = Cnm * cos_ml[m] + Snm * sin_ml[m]
-            sc = -Cnm * sin_ml[m] + Snm * cos_ml[m]
-
-            a_r += (n + 1) * rn * P[n, m] * cs
-            a_phi += rn * dP[n, m] * cs
-            a_lam += rn * m * P[n, m] * sc
+    a_r = np.sum(W * (n_col + 1.0) * P * cs)
+    a_phi = np.sum(W * dP * cs)
+    a_lam = np.sum(W * m_row * P * sc)
 
     factor = gm / (r * r)
     a_r = -factor * a_r
@@ -245,22 +276,16 @@ def spherical_harmonic_accel(pos_bf, C, S, max_degree, gm=GM_MOON, r_ref=R_MOON)
     # Convert from spherical to Cartesian (body-fixed)
     cos_lam = np.cos(lam)
     sin_lam = np.sin(lam)
-
-    # Unit vectors in Cartesian
-    # e_r = [cos_phi*cos_lam, cos_phi*sin_lam, sin_phi]
-    # e_phi = [-sin_phi*cos_lam, -sin_phi*sin_lam, cos_phi]
-    # e_lam = [-sin_lam, cos_lam, 0]
-    ax = (a_r * cos_phi * cos_lam
-          + a_phi * (-sin_phi * cos_lam)
-          + a_lam * (-sin_lam))
-    ay = (a_r * cos_phi * sin_lam
-          + a_phi * (-sin_phi * sin_lam)
-          + a_lam * cos_lam)
-    az = (a_r * sin_phi
-          + a_phi * cos_phi)
+    ax = a_r * cos_phi * cos_lam - a_phi * sin_phi * cos_lam - a_lam * sin_lam
+    ay = a_r * cos_phi * sin_lam - a_phi * sin_phi * sin_lam + a_lam * cos_lam
+    az = a_r * sin_phi + a_phi * cos_phi
 
     return np.array([ax, ay, az])
 
+
+# ---------------------------------------------------------------------------
+# Point-mass, third-body and SRP terms
+# ---------------------------------------------------------------------------
 
 def central_body_accel(pos, gm=GM_MOON):
     """Point-mass gravitational acceleration.
@@ -285,6 +310,9 @@ def central_body_accel(pos, gm=GM_MOON):
 
 def third_body_accel(pos_sc, pos_body, gm_body):
     """Third-body gravitational perturbation acceleration.
+
+    Includes the indirect term (acceleration of the central body toward the
+    perturbing body), as required in a central-body-centred frame.
 
     Parameters
     ----------
@@ -311,7 +339,7 @@ def third_body_accel(pos_sc, pos_body, gm_body):
 
 
 def srp_accel(pos_sc_helio, cr=1.5, area_mass_ratio=0.02):
-    """Solar radiation pressure acceleration (simplified).
+    """Solar radiation pressure acceleration (cannonball model, no eclipses).
 
     Parameters
     ----------

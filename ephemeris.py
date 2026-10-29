@@ -1,41 +1,44 @@
 """
 Observation ephemeris computation.
 
-Computes RA/DEC of a cislunar spacecraft as seen from a ground-based observer,
+Computes topocentric RA/DEC (plus rates, Alt/Az, lunar elongation and a
+day/night flag) of a cislunar spacecraft as seen from a ground-based observer,
 given the observer's geodetic coordinates or MPC observatory code.
+
+Positions are instantaneous geometric topocentric vectors: no light-time,
+aberration or refraction corrections are applied.  All epochs of one
+ephemeris are processed in a single vectorized pass.
 """
+
+from functools import lru_cache
 
 import numpy as np
 from scipy.interpolate import CubicSpline, interp1d
-from astropy.time import Time, TimeDelta
+from astropy.time import TimeDelta
 from astropy.coordinates import (
     EarthLocation,
     GCRS,
     AltAz,
     SkyCoord,
     CartesianRepresentation,
-    solar_system_ephemeris,
-    get_body_barycentric_posvel,
+    get_body_barycentric,
     get_body,
 )
 import astropy.units as u
 
+# Importing propagator selects the solar-system ephemeris source (DE kernel
+# or astropy builtin) for every body lookup made below.
+from propagator import EPHEMERIS_NAME  # noqa: F401
 
-def get_observer_location(observer_config):
-    """Get EarthLocation from observer configuration.
 
-    Parameters
-    ----------
-    observer_config : dict
-        Either {'type': 'geodetic', 'lat': deg, 'lon': deg, 'alt': m}
-        or {'type': 'mpc', 'mpc_code': 'XXX'}
+# ---------------------------------------------------------------------------
+# Observer
+# ---------------------------------------------------------------------------
 
-    Returns
-    -------
-    location : astropy.coordinates.EarthLocation
-    """
-    if observer_config.get('type') == 'mpc':
-        code = observer_config['mpc_code']
+@lru_cache(maxsize=64)
+def _observer_location_cached(kind, a, b, c):
+    if kind == 'mpc':
+        code = a
         try:
             return EarthLocation.of_site(code)
         except Exception:
@@ -56,33 +59,57 @@ def get_observer_location(observer_config):
             )
         except Exception as e:
             raise ValueError(f"Cannot resolve MPC code '{code}': {e}")
-    else:
-        lat = observer_config.get('lat', 0.0)
-        lon = observer_config.get('lon', 0.0)
-        alt = observer_config.get('alt', 0.0)
-        return EarthLocation.from_geodetic(
-            lon=lon * u.deg, lat=lat * u.deg, height=alt * u.m
-        )
+    return EarthLocation.from_geodetic(lon=b * u.deg, lat=a * u.deg, height=c * u.m)
 
 
-def _sun_altitude(t, location):
-    """Compute Sun altitude in degrees at given time and location."""
-    try:
-        altaz_frame = AltAz(obstime=t, location=location)
-        sun_altaz = get_body('sun', t, location).transform_to(altaz_frame)
-        return sun_altaz.alt.deg
-    except Exception:
-        return None
+def get_observer_location(observer_config):
+    """Get EarthLocation from observer configuration.
 
-
-def _sky_condition(sun_alt):
-    """Classify sky condition based on Sun altitude.
+    Parameters
+    ----------
+    observer_config : dict
+        Either {'type': 'geodetic', 'lat': deg, 'lon': deg, 'alt': m}
+        or {'type': 'mpc', 'mpc_code': 'XXX'}
 
     Returns
     -------
-    str : 'day', 'civil_tw', 'nautical_tw', 'astro_tw', or 'night'
+    location : astropy.coordinates.EarthLocation
     """
-    if sun_alt is None:
+    if observer_config.get('type') == 'mpc':
+        code = str(observer_config.get('mpc_code', '')).strip()
+        if not code:
+            raise ValueError("MPC observatory code is empty")
+        return _observer_location_cached('mpc', code, None, None)
+    lat = float(observer_config.get('lat', 0.0))
+    lon = float(observer_config.get('lon', 0.0))
+    alt = float(observer_config.get('alt', 0.0))
+    return _observer_location_cached('geodetic', lat, lon, alt)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fmt_hms(ra_deg):
+    """RA in degrees -> 'HH:MM:SS.ss' with correct carry at 60 s."""
+    tot = int(round(ra_deg / 15.0 * 360000.0)) % (24 * 360000)
+    h, rem = divmod(tot, 360000)
+    m, cs = divmod(rem, 6000)
+    return f"{h:02d}:{m:02d}:{cs / 100.0:05.2f}"
+
+
+def _fmt_dms(dec_deg):
+    """DEC in degrees -> '+DD:MM:SS.s' with correct carry at 60 arcsec."""
+    sign = '-' if dec_deg < 0 else '+'
+    tot = int(round(abs(dec_deg) * 36000.0))
+    d, rem = divmod(tot, 36000)
+    m, ds = divmod(rem, 600)
+    return f"{sign}{d:02d}:{m:02d}:{ds / 10.0:04.1f}"
+
+
+def _sky_condition(sun_alt):
+    """Classify sky condition from Sun altitude (deg) -> str."""
+    if sun_alt is None or not np.isfinite(sun_alt):
         return 'unknown'
     if sun_alt > 0:
         return 'day'
@@ -92,9 +119,57 @@ def _sky_condition(sun_alt):
         return 'nautical_tw'
     elif sun_alt > -18:
         return 'astro_tw'
-    else:
-        return 'night'
+    return 'night'
 
+
+def _sky_rates(ra_deg, dec_deg, step_sec):
+    """Finite-difference sky-motion rates on a uniform time grid.
+
+    Returns (ra_rate, dec_rate, total_rate, pa):
+      ra_rate   d(RA)/dt      arcsec/min (coordinate rate, no cos(dec))
+      dec_rate  d(DEC)/dt     arcsec/min
+      total     great-circle rate, arcsec/min (RA term scaled by cos(dec))
+      pa        position angle of motion, deg, N through E
+    Central differences inside, one-sided at the ends.
+    """
+    n = len(ra_deg)
+    if n < 2 or step_sec <= 0:
+        z = np.zeros(n)
+        return z, z, z, z
+    dt_min = step_sec / 60.0
+    ra_unwrapped = np.unwrap(ra_deg, period=360.0)
+    dra = np.gradient(ra_unwrapped, dt_min)      # deg/min
+    ddec = np.gradient(dec_deg, dt_min)          # deg/min
+    ra_rate = dra * 3600.0
+    dec_rate = ddec * 3600.0
+    dra_sky = dra * np.cos(np.radians(dec_deg)) * 3600.0
+    total = np.hypot(dra_sky, dec_rate)
+    pa = np.degrees(np.arctan2(dra_sky, dec_rate)) % 360.0
+    return ra_rate, dec_rate, total, pa
+
+
+def _spacecraft_states(prop_result, dt_array):
+    """Moon-centred states at elapsed seconds dt_array, shape (N, 6).
+
+    Prefers the integrator's dense output (7th-order DOP853 interpolant);
+    falls back to a cubic spline through the output grid.
+    """
+    sol = prop_result.get('sol')
+    if sol is not None and getattr(sol, 'sol', None) is not None:
+        return sol.sol(dt_array).T
+    prop_times = prop_result['times']
+    t_sec = prop_result.get('t_sec')
+    if t_sec is None:
+        t_sec = (prop_times - prop_times[0]).sec
+    states = prop_result['states']
+    if len(t_sec) > 3:
+        return CubicSpline(t_sec, states, axis=0)(dt_array)
+    return interp1d(t_sec, states, axis=0, fill_value='extrapolate')(dt_array)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 def compute_observation_ephemeris(prop_result, observer_config, step_sec=60.0,
                                   t_start_offset=0.0, t_duration=None):
@@ -115,204 +190,94 @@ def compute_observation_ephemeris(prop_result, observer_config, step_sec=60.0,
 
     Returns
     -------
-    ephemeris : dict
+    ephemeris : dict of lists (one entry per output epoch)
     """
-    solar_system_ephemeris.set('builtin')
-
     location = get_observer_location(observer_config)
     prop_times = prop_result['times']
-    prop_states = prop_result['states']  # Moon-centered ICRF, km
-
-    # Determine output times at step_sec intervals
     prop_epoch = prop_times[0]
-    prop_end = prop_times[-1]
-    prop_total_sec = (prop_end - prop_epoch).sec
+    prop_total_sec = float(prop_result.get('duration_sec',
+                                           (prop_times[-1] - prop_epoch).sec))
 
-    # Ephemeris output window
-    ephem_start_sec = max(0.0, t_start_offset)
+    # Output window inside the propagated span
+    step_sec = float(step_sec)
+    if step_sec <= 0:
+        raise ValueError("Ephemeris step must be positive")
+    ephem_start_sec = max(0.0, float(t_start_offset))
     if t_duration is not None:
-        ephem_end_sec = min(ephem_start_sec + t_duration, prop_total_sec)
+        ephem_end_sec = min(ephem_start_sec + float(t_duration), prop_total_sec)
     else:
         ephem_end_sec = prop_total_sec
-    ephem_duration = ephem_end_sec - ephem_start_sec
-
-    n_steps = int(ephem_duration / step_sec) + 1
-    dt_array = ephem_start_sec + np.arange(n_steps) * step_sec
-    # Clip to not exceed propagation end
-    dt_array = dt_array[dt_array <= prop_total_sec]
+    n_steps = int(np.floor((ephem_end_sec - ephem_start_sec) / step_sec + 1e-9)) + 1
+    dt_array = ephem_start_sec + np.arange(max(n_steps, 1)) * step_sec
+    dt_array = dt_array[dt_array <= prop_total_sec + 1e-6]
+    n = len(dt_array)
     out_times = prop_epoch + TimeDelta(dt_array, format='sec')
 
-    # Interpolate spacecraft states at output times
-    prop_t_sec = (prop_times - prop_epoch).sec
-    if len(prop_t_sec) > 3:
-        state_interp = CubicSpline(prop_t_sec, prop_states, axis=0)
-    else:
-        state_interp = interp1d(prop_t_sec, prop_states, axis=0,
-                                fill_value='extrapolate')
+    # Spacecraft Moon-centred positions (N, 3)
+    sc_moon = _spacecraft_states(prop_result, dt_array)[:, :3]
 
-    ra_list = []
-    dec_list = []
-    ra_hms_list = []
-    dec_dms_list = []
-    dist_list = []
-    alt_list = []
-    az_list = []
-    time_str_list = []
-    sky_flag_list = []
-    ra_rate_list = []
-    dec_rate_list = []
-    total_rate_list = []
-    pa_list = []
-    lunar_elong_list = []
+    # Moon relative to Earth (ICRF) at all epochs, one lookup per body
+    moon_bc = get_body_barycentric('moon', out_times).xyz.to_value(u.km).T
+    earth_bc = get_body_barycentric('earth', out_times).xyz.to_value(u.km).T
+    moon_geo = moon_bc - earth_bc                       # (N, 3)
+    sc_gcrs = moon_geo + sc_moon                        # (N, 3)
 
-    for idx, t in enumerate(out_times):
-        t_sec = dt_array[idx]
-        sc_moon = state_interp(t_sec)[:3]  # Moon-centered ICRF position [km]
+    # Observer in GCRS (includes Earth rotation, precession/nutation, polar motion)
+    obs_gcrs = location.get_gcrs(out_times).cartesian.xyz.to_value(u.km).T
 
-        # Get Moon position in GCRS (Earth-centered)
-        moon_bc = get_body_barycentric_posvel('moon', t)[0]
-        earth_bc = get_body_barycentric_posvel('earth', t)[0]
-        moon_geo = (moon_bc.xyz - earth_bc.xyz).to(u.km).value  # km, ICRS
+    # Topocentric geometric vector -> RA/DEC
+    topo = sc_gcrs - obs_gcrs
+    dist = np.linalg.norm(topo, axis=1)
+    topo_unit = topo / dist[:, None]
+    dec = np.degrees(np.arcsin(np.clip(topo_unit[:, 2], -1.0, 1.0)))
+    ra = np.degrees(np.arctan2(topo_unit[:, 1], topo_unit[:, 0])) % 360.0
 
-        # Spacecraft position in GCRS
-        sc_gcrs_km = moon_geo + sc_moon
+    # Alt/Az from the GCRS Cartesian position (topocentric transform)
+    altaz_frame = AltAz(obstime=out_times, location=location)
+    try:
+        sc_coord = SkyCoord(
+            CartesianRepresentation(sc_gcrs[:, 0] * u.km,
+                                    sc_gcrs[:, 1] * u.km,
+                                    sc_gcrs[:, 2] * u.km),
+            frame=GCRS(obstime=out_times),
+        )
+        sc_altaz = sc_coord.transform_to(altaz_frame)
+        alt = np.round(np.atleast_1d(sc_altaz.alt.deg), 4).tolist()
+        az = np.round(np.atleast_1d(sc_altaz.az.deg), 4).tolist()
+    except Exception:
+        alt = [None] * n
+        az = [None] * n
 
-        # Observer position in GCRS
-        obs_gcrs = location.get_gcrs(t)
-        obs_xyz_km = np.array([
-            obs_gcrs.cartesian.x.to(u.km).value,
-            obs_gcrs.cartesian.y.to(u.km).value,
-            obs_gcrs.cartesian.z.to(u.km).value,
-        ])
+    # Sun altitude -> sky condition flag
+    try:
+        sun_alt = np.atleast_1d(
+            get_body('sun', out_times, location).transform_to(altaz_frame).alt.deg)
+        sky_flags = [_sky_condition(float(s)) for s in sun_alt]
+    except Exception:
+        sky_flags = ['unknown'] * n
 
-        # Topocentric vector (GCRS)
-        topo = sc_gcrs_km - obs_xyz_km
-        dist = np.linalg.norm(topo)
+    # Lunar elongation: angle between target and Moon centre as seen by observer
+    topo_moon = moon_geo - obs_gcrs
+    dist_moon = np.linalg.norm(topo_moon, axis=1)
+    cos_elong = np.sum(topo_unit * topo_moon / dist_moon[:, None], axis=1)
+    lunar_elong = np.degrees(np.arccos(np.clip(cos_elong, -1.0, 1.0)))
 
-        # Topocentric RA/DEC from GCRS topocentric vector
-        topo_unit = topo / dist
-        dec = np.degrees(np.arcsin(np.clip(topo_unit[2], -1, 1)))
-        ra = np.degrees(np.arctan2(topo_unit[1], topo_unit[0])) % 360
-
-        # Format RA as HH:MM:SS.ss
-        ra_h = ra / 15.0
-        ra_hh = int(ra_h)
-        ra_mm = int((ra_h - ra_hh) * 60)
-        ra_ss = (ra_h - ra_hh - ra_mm / 60.0) * 3600
-        ra_hms = f"{ra_hh:02d}:{ra_mm:02d}:{ra_ss:05.2f}"
-
-        # Format DEC as +DD:MM:SS.s
-        dec_sign = '+' if dec >= 0 else '-'
-        dec_abs = abs(dec)
-        dec_dd = int(dec_abs)
-        dec_mm = int((dec_abs - dec_dd) * 60)
-        dec_ss = (dec_abs - dec_dd - dec_mm / 60.0) * 3600
-        dec_dms = f"{dec_sign}{dec_dd:02d}:{dec_mm:02d}:{dec_ss:04.1f}"
-
-        # Compute Alt/Az using GCRS Cartesian position directly
-        try:
-            sc_coord = SkyCoord(
-                CartesianRepresentation(
-                    sc_gcrs_km[0] * u.km,
-                    sc_gcrs_km[1] * u.km,
-                    sc_gcrs_km[2] * u.km
-                ),
-                frame=GCRS(obstime=t)
-            )
-            altaz_frame = AltAz(obstime=t, location=location)
-            sc_altaz = sc_coord.transform_to(altaz_frame)
-            alt_list.append(round(float(sc_altaz.alt.deg), 4))
-            az_list.append(round(float(sc_altaz.az.deg), 4))
-        except Exception:
-            alt_list.append(None)
-            az_list.append(None)
-
-        # Sun altitude -> sky condition flag
-        sun_alt = _sun_altitude(t, location)
-        sky_flag_list.append(_sky_condition(sun_alt))
-
-        # Lunar elongation: angular separation between target and Moon center
-        topo_moon = moon_geo - obs_xyz_km
-        dist_moon = np.linalg.norm(topo_moon)
-        if dist > 0 and dist_moon > 0:
-            cos_elong = np.dot(topo_unit, topo_moon / dist_moon)
-            lunar_elong = np.degrees(np.arccos(np.clip(cos_elong, -1, 1)))
-        else:
-            lunar_elong = 0.0
-        lunar_elong_list.append(round(lunar_elong, 4))
-
-        ra_list.append(round(ra, 6))
-        dec_list.append(round(dec, 6))
-        ra_hms_list.append(ra_hms)
-        dec_dms_list.append(dec_dms)
-        dist_list.append(round(dist, 3))
-        time_str_list.append(t.utc.isot)
-
-    # Compute RA/DEC rates via finite differences (arcmin/min)
-    ra_arr = np.array(ra_list)
-    dec_arr = np.array(dec_list)
-    n = len(ra_arr)
-    for idx in range(n):
-        if n < 2:
-            ra_rate_list.append(0.0)
-            dec_rate_list.append(0.0)
-            total_rate_list.append(0.0)
-            pa_list.append(0.0)
-            continue
-
-        if idx == 0:
-            i0, i1 = 0, 1
-        elif idx == n - 1:
-            i0, i1 = n - 2, n - 1
-        else:
-            i0, i1 = idx - 1, idx + 1
-
-        dt_min = (dt_array[i1] - dt_array[i0]) / 60.0  # minutes
-        if dt_min == 0:
-            ra_rate_list.append(0.0)
-            dec_rate_list.append(0.0)
-            total_rate_list.append(0.0)
-            pa_list.append(0.0)
-            continue
-
-        # RA difference handling wrap-around at 360 deg
-        dra = ra_arr[i1] - ra_arr[i0]
-        if dra > 180:
-            dra -= 360
-        elif dra < -180:
-            dra += 360
-        ddec = dec_arr[i1] - dec_arr[i0]
-
-        # Rates in arcsec/min (deg -> arcsec = *3600)
-        ra_rate = dra * 3600.0 / dt_min   # arcsec/min (coordinate rate, not cos(dec) corrected)
-        dec_rate = ddec * 3600.0 / dt_min  # arcsec/min
-
-        # Total rate: great-circle rate on sky (cos(dec) correction on RA)
-        cos_dec = np.cos(np.radians(dec_arr[idx]))
-        dra_sky = dra * cos_dec * 3600.0 / dt_min  # arcsec/min projected on sky
-        total_rate = np.sqrt(dra_sky**2 + dec_rate**2)
-
-        # Position angle: measured N through E (standard)
-        pa = np.degrees(np.arctan2(dra_sky, dec_rate)) % 360
-
-        ra_rate_list.append(round(ra_rate, 4))
-        dec_rate_list.append(round(dec_rate, 4))
-        total_rate_list.append(round(total_rate, 4))
-        pa_list.append(round(pa, 2))
+    # Sky-motion rates and position angle
+    ra_rate, dec_rate, total_rate, pa = _sky_rates(ra, dec, step_sec)
 
     return {
-        'times_utc': time_str_list,
-        'ra_deg': ra_list,
-        'dec_deg': dec_list,
-        'ra_hms': ra_hms_list,
-        'dec_dms': dec_dms_list,
-        'ra_rate': ra_rate_list,
-        'dec_rate': dec_rate_list,
-        'total_rate': total_rate_list,
-        'pa': pa_list,
-        'lunar_elong': lunar_elong_list,
-        'distance_km': dist_list,
-        'altitude_deg': alt_list,
-        'azimuth_deg': az_list,
-        'sky_flag': sky_flag_list,
+        'times_utc': [t for t in np.atleast_1d(out_times.utc.isot)],
+        'ra_deg': np.round(ra, 6).tolist(),
+        'dec_deg': np.round(dec, 6).tolist(),
+        'ra_hms': [_fmt_hms(x) for x in ra],
+        'dec_dms': [_fmt_dms(x) for x in dec],
+        'ra_rate': np.round(ra_rate, 4).tolist(),
+        'dec_rate': np.round(dec_rate, 4).tolist(),
+        'total_rate': np.round(total_rate, 4).tolist(),
+        'pa': np.round(pa, 2).tolist(),
+        'lunar_elong': np.round(lunar_elong, 4).tolist(),
+        'distance_km': np.round(dist, 3).tolist(),
+        'altitude_deg': alt,
+        'azimuth_deg': az,
+        'sky_flag': sky_flags,
     }
