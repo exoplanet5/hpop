@@ -19,7 +19,7 @@ Propagation always happens internally: the ephemeris at time *t* needs the space
 
 ## Dynamical Model
 
-The propagator integrates equations of motion in the **Moon-centered ICRF** frame using SciPy's DOP853 (8th-order Runge-Kutta) integrator with tolerances `rtol=1e-12`, `atol=1e-14`. The integrator chooses its own step size (no artificial cap); outputs at arbitrary times come from the integrator's 7th-order dense output.
+The propagator integrates equations of motion in the **Moon-centered ICRF** frame using SciPy's DOP853 (8th-order Runge-Kutta) integrator with tolerances `rtol=1e-12`, `atol=1e-14`. The integrator chooses its own step size (no artificial cap); outputs at arbitrary times come from the integrator's 7th-order dense output. `propagator.propagate()` integrates backward in time when given a negative duration (for callers such as cislunar-eye); the web app itself always propagates forward from the state epoch.
 
 ### Perturbation Sources
 

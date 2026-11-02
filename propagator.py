@@ -337,8 +337,9 @@ def _precompute_third_body_positions(t_start_jd_tdb, duration_sec, body_interval
     over the (N, 6) array [earth_xyz, sun_xyz] parameterised by elapsed
     seconds, so the ODE right-hand side needs one spline evaluation.
     """
-    n_pts = max(int(duration_sec / body_interval) + 2, 10)
-    dt_array = np.linspace(0.0, duration_sec, n_pts)
+    n_pts = max(int(abs(duration_sec) / body_interval) + 2, 10)
+    # Increasing abscissae for CubicSpline: a backward run tabulates [duration, 0]
+    dt_array = np.linspace(min(0.0, duration_sec), max(0.0, duration_sec), n_pts)
     t = Time(t_start_jd_tdb + dt_array / 86400.0, format='jd', scale='tdb')
 
     moon = get_body_barycentric('moon', t).xyz.to_value(u.km).T
@@ -377,11 +378,12 @@ def propagate(state0, epoch, duration_sec, step_sec=60.0, config=None,
     epoch : astropy.time.Time
         Initial epoch.
     duration_sec : float
-        Propagation duration [seconds], must be positive.
+        Propagation duration [seconds], finite and non-zero. A negative
+        duration integrates backward in time from the epoch.
     step_sec : float
-        Output grid step [seconds]. The integrator chooses its own internal
-        steps; the dense output ('sol') can be evaluated at any time within
-        the span.
+        Output grid step [seconds], positive. The integrator chooses its own
+        internal steps; the dense output ('sol') can be evaluated at any time
+        within the span.
     config : HPOPConfig or None
         Propagation configuration.
     progress_callback : callable or None
@@ -392,16 +394,19 @@ def propagate(state0, epoch, duration_sec, step_sec=60.0, config=None,
     result : dict
         'times'        astropy Time array (N,)
         'states'       ndarray (N, 6) in km, km/s (Moon-centered ICRF)
-        't_sec'        ndarray (N,) seconds since epoch
+        't_sec'        ndarray (N,) seconds since epoch (decreasing for a
+                       backward run)
         'epoch'        initial epoch
-        'duration_sec' total span in seconds
+        'duration_sec' total span in seconds (signed)
         'sol'          scipy OdeResult (use result['sol'].sol(t) for dense output)
         'n_rhs_evals'  number of right-hand-side evaluations
     """
     if config is None:
         config = HPOPConfig()
-    if duration_sec <= 0:
-        raise ValueError("Propagation duration must be positive")
+    if not np.isfinite(duration_sec) or duration_sec == 0:
+        raise ValueError("Propagation duration must be finite and non-zero")
+    if step_sec <= 0:
+        raise ValueError("Output step must be positive")
 
     # Gravity coefficients
     C, S = get_coefficients(config.gravity_degree)
@@ -450,12 +455,15 @@ def propagate(state0, epoch, duration_sec, step_sec=60.0, config=None,
         out[3:] = accel
         return out
 
-    # Output grid: multiples of step_sec, always ending exactly at duration_sec
-    t_eval = np.arange(0.0, duration_sec, step_sec)
-    if duration_sec - t_eval[-1] > 1e-6:
-        t_eval = np.append(t_eval, duration_sec)
+    # Output grid: multiples of step_sec in the direction of propagation,
+    # always ending exactly at duration_sec
+    span = abs(duration_sec)
+    t_eval = np.arange(0.0, span, step_sec)
+    if span - t_eval[-1] > 1e-6:
+        t_eval = np.append(t_eval, span)
     else:
-        t_eval[-1] = duration_sec
+        t_eval[-1] = span
+    t_eval = np.copysign(t_eval, duration_sec)
 
     sol = solve_ivp(
         equations_of_motion,
